@@ -4,14 +4,12 @@ import org.slf4j.Logger;
 
 import java.io.IOException;
 import java.io.InputStream;
-import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
-import java.util.Locale;
 import java.util.Map;
 
 /**
@@ -169,21 +167,8 @@ public final class Configuration {
         return new Configuration(dedup, unknownFirst, byJoin, messages, autoReload, interval, delay);
     }
 
-    /** 自动重载时对比文件内容用（避免只比 mtime 拿不到变化细节）。 */
-    public static String readFileText(final Path dataDirectory) {
-        try {
-            return new String(Files.readAllBytes(dataDirectory.resolve("config.toml")), StandardCharsets.UTF_8);
-        } catch (final Exception e) {
-            return "";
-        }
-    }
-
     /** 消息里的 #xxx# 换成实参。 */
     public static String fill(final String template, final String key, final String value) {
         return template == null ? "" : template.replace("#" + key + "#", value);
-    }
-
-    static String lower(final String s) {
-        return s == null ? "" : s.toLowerCase(Locale.ROOT);
     }
 }

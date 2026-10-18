@@ -108,24 +108,42 @@ final class Sorter {
             byServer.computeIfAbsent(server, k -> new ArrayList<>()).add(player);
         }
 
-        // 2. 每个子服一个优先级基数
-        //    unknownFirst：没列进 order 的排最前 → 已列的从 1 开始，未列的用 0；
-        //    否则：已列的按位置 0..n-1，未列的统一用 n（排最后）。
+        // 2. 每个子服一个优先级基数 —— 每个服（含未列出的）拿到的基数必须互不相同，
+        //    否则两个子服的玩家会按各自组内的序号交叉混排。
+        //      已列出的：按 order 里的位置；
+        //      未列出的：按服名升序分到已列出服的前面（unknownFirst）或后面的连续区间。
+        //    全部非负（协议要求 non-negative），统一 Math.min 截到 PRIORITY_CAP ——
+        //    只有 order 列了 2000+ 个服才会触发截断（实际不可能）。
         final List<String> order = config.serverOrder();
         final Map<String, Integer> base = new HashMap<>();
+        final List<String> unknownServers = new ArrayList<>();
         for (final String server : byServer.keySet()) {
             final int idx = order.indexOf(server);
             if (idx >= 0) {
-                base.put(server, Math.min(idx + (config.unknownFirst() ? 1 : 0), PRIORITY_CAP));
+                base.put(server, idx);
             } else {
-                base.put(server, Math.min(config.unknownFirst() ? 0 : order.size(), PRIORITY_CAP));
+                unknownServers.add(server);
             }
+        }
+        java.util.Collections.sort(unknownServers); // 服名升序（都是小写）
+        final int unknownCount = unknownServers.size();
+        final int offset = config.unknownFirst() ? unknownCount : 0;
+        for (final Map.Entry<String, Integer> e : base.entrySet()) {
+            e.setValue(Math.min(offset + e.getValue(), PRIORITY_CAP));
+        }
+        for (int i = 0; i < unknownCount; i++) {
+            final int b = config.unknownFirst()
+                    ? i
+                    : Math.min(order.size(), PRIORITY_CAP) + i;
+            base.put(unknownServers.get(i), Math.min(b, PRIORITY_CAP));
         }
 
         // 3. 组内排序 + 拼顺序值
         final Map<UUID, Integer> out = new HashMap<>();
         for (final Map.Entry<String, List<Player>> group : byServer.entrySet()) {
             final List<Player> players = group.getValue();
+            // join 模式：按进代理的先后。热加载插件后才进服的玩家拿不到序号
+            // （PostLogin 早已过去）→ MAX_VALUE 兜底，它们按名字排在同服老人后面。
             final Comparator<Player> cmp = config.sameServerByJoin()
                     ? Comparator.comparing(p -> joinSeq.getOrDefault(p.getUniqueId(), Long.MAX_VALUE))
                     : Comparator.comparing(p -> p.getUsername().toLowerCase(Locale.ROOT));
