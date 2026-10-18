@@ -1,0 +1,78 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <groupId>cn.shijiu</groupId>
+    <artifactId>vtabsort</artifactId>
+    <version>1.0.0</version>
+    <packaging>jar</packaging>
+
+    <name>VTabSort</name>
+    <description>Tab 列表按子服排序（Velocity 代理端）—— listOrder 协议字段，不碰 scoreboard team</description>
+
+    <properties>
+        <!-- 🔴 必须 Java 25（class 69）：velocity-api 4.x 及 4.1/4.2 代理本体都是 class 69，
+             编成 17 的话 setListOrder（3.4.0 才加的 API）也引用不到。 -->
+        <java.version>25</java.version>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+    </properties>
+
+    <build>
+        <resources>
+            <resource>
+                <directory>${project.basedir}/src/main/resources</directory>
+                <filtering>true</filtering>
+            </resource>
+        </resources>
+        <plugins>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-compiler-plugin</artifactId>
+                <version>3.13.0</version>
+                <configuration>
+                    <release>${java.version}</release>
+                    <encoding>UTF-8</encoding>
+                </configuration>
+            </plugin>
+            <!-- 把 src/main/java-templates 里的 ${project.version} 换成真版本号，
+                 生成 BuildConstants —— @Plugin(version = ...) 只能吃编译期常量，
+                 而注解的值会盖掉 velocity-plugin.json 里那份。
+                 ⚠️ 没有它，产物里显示的版本号永远是注解里硬编码的那串。 -->
+            <plugin>
+                <groupId>org.codehaus.mojo</groupId>
+                <artifactId>templating-maven-plugin</artifactId>
+                <version>1.0.0</version>
+                <executions>
+                    <execution>
+                        <id>filter-src</id>
+                        <goals>
+                            <goal>filter-sources</goal>
+                        </goals>
+                    </execution>
+                </executions>
+            </plugin>
+        </plugins>
+    </build>
+
+    <repositories>
+        <repository>
+            <id>papermc-repo</id>
+            <url>https://repo.papermc.io/repository/maven-public/</url>
+        </repository>
+    </repositories>
+
+    <dependencies>
+        <!-- ⚠️ 只用 provided：打出来的 jar 里不放任何第三方库，运行时由 Velocity 提供。
+             🔴 必须是 4.x：setListOrder(int) 是 velocity-api 3.4.0 才加的（MC 1.21.2
+             的 UPDATE_LIST_ORDER），3.2.0（VWhisper/Vmessage 用的那份）里没有。
+             测试服 velocity 4.1.0-SNAPSHOT-16 与线上 4.2.1 均已核实带此方法。 -->
+        <dependency>
+            <groupId>com.velocitypowered</groupId>
+            <artifactId>velocity-api</artifactId>
+            <version>4.3.0</version>
+            <scope>provided</scope>
+        </dependency>
+    </dependencies>
+</project>

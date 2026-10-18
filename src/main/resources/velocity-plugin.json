@@ -1,0 +1,10 @@
+{
+  "id": "vtabsort",
+  "name": "VTabSort",
+  "version": "${project.version}",
+  "description": "Tab 列表按子服排序：用 1.21.2+ 的 listOrder 协议字段，不碰 scoreboard team，不影响小游戏藏名字。",
+  "authors": [
+    "拾玖世界"
+  ],
+  "main": "cn.shijiu.vtabsort.VTabSort"
+}
