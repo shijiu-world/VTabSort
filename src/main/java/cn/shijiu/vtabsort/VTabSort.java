@@ -278,6 +278,9 @@ public final class VTabSort {
      * 周期性校准（advanced.reassert-seconds，0=关）：后端 Paper 会把自己玩家的
      * listOrder 重置回 0、TAB 也可能在事件里覆写显示名/重新 listed —— 全量
      * 重算 + diff 应用，没变化一个包都不发，有变化几秒内拉回来。
+     *
+     * <p>⚠️ 周期在起服时定死（读一次 config）：改 reassert-seconds 要重启代理
+     * 才生效（和 auto-reload-interval-seconds 一样），开关语义只有 0/非 0。
      */
     private void startReassert() {
         final int seconds = Math.max(0, config.reassertSeconds());

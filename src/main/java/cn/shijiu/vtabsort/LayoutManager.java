@@ -111,9 +111,10 @@ final class LayoutManager {
         final int rMin = (cap * (c - 1) + 1 + c - 1) / c;
         final boolean trunc = natural > cap;
         final int r = trunc ? cap : Math.max(natural, rMin);
-        // 服主规则：所有服都并进一列仍超高 → 允许溢出（不截断）
+        // 溢出策略：truncate=false（配置）→ 全局允许溢出（网格会变形，注释已写明）；
+        // 服主规则：所有服并进一列仍超高 → 允许溢出（不截断）。
         final boolean allMerged = columnsRaw.size() == 1 && columnsRaw.get(0).size() > 1;
-        final boolean allowExceed = !trunc || allMerged;
+        final boolean allowExceed = !cfg.truncate() || !trunc || allMerged;
 
         // 5) 填槽（列主序，槽位号 = 全局序号，与客户端折行一致）
         final List<LayoutModel.Slot> slots = new ArrayList<>();
@@ -121,7 +122,7 @@ final class LayoutManager {
         final Set<UUID> hidden = new LinkedHashSet<>();
         final List<LayoutModel.ColumnDesc> colDescs = new ArrayList<>();
         for (final List<Sec> col : columnsRaw) {
-            fillColumn(col, r, trunc, allowExceed, cfg, slots, hidden, colDescs);
+            fillColumn(col, r, allowExceed, cfg, slots, hidden, colDescs);
         }
         for (int i = 0; i < slots.size(); i++) {
             final UUID u = slots.get(i).player;
@@ -178,7 +179,7 @@ final class LayoutManager {
     }
 
     /** 把一列填成恰好 rows 高：分节头、玩家、分节空行、假人补位。 */
-    private void fillColumn(final List<Sec> col, final int rows, final boolean trunc,
+    private void fillColumn(final List<Sec> col, final int rows,
                             final boolean allowExceed, final Configuration cfg,
                             final List<LayoutModel.Slot> slots, final Set<UUID> hidden,
                             final List<LayoutModel.ColumnDesc> colDescs) {

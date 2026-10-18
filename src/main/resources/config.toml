@@ -83,6 +83,7 @@ usage = "用法：/vtabsort reload | layout | version"
 #     兜 TAB 建条目的竞态。0 = 不补。
 #   reassert-seconds = 周期性校准（秒；0 = 关）：后端 Paper 会把玩家
 #     条目的 listOrder 重置回 0、TAB 也可能覆写显示名，靠它拉回来。
+#     改这个数值要重启代理才生效（周期起服时定死）。
 # ------------------------------------------------------------
 [advanced]
 auto-reload = false
