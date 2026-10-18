@@ -78,6 +78,9 @@ public final class VTabSort {
 
     @Subscribe
     public void onProxyInitialization(final ProxyInitializeEvent event) {
+        // 热重载自愈：Velocity 没有「卸载回调」，上一任实例塞的假条目/藏掉的玩家
+        // 只能由新实例起手清掉（冷启动没玩家，这步免费）。清完立刻 reload→rebuild 重建。
+        layoutManager.resetAll();
         reload(null);
         registerCommands();
         startAutoReload();

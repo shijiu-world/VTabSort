@@ -324,12 +324,36 @@ final class LayoutManager {
     /** 模式切走 / 清场：拔掉所有 viewer 的假条目。 */
     void stripAll() {
         for (final Player viewer : proxy.getAllPlayers()) {
-            final TabList tabList = viewer.getTabList();
-            for (int i = 0; i < FAKE_RANGE; i++) {
-                final UUID fakeId = fakeUuid(i);
-                if (tabList.containsEntry(fakeId)) {
-                    tabList.removeEntry(fakeId);
+            stripViewerFakes(viewer);
+        }
+    }
+
+    /**
+     * 热重载自愈：新实例起手清上一任的痕迹 —— 拔假条目 + 恢复所有真实玩家
+     * 可见（上一任藏掉的人不能让它永远隐身到重登）。冷启动没玩家，等于免费；
+     * 清完紧接着 reload→rebuild 就把新状态建回来了。
+     *
+     * <p>显示名刻意不重置：layout 模式下显示名归 TAB 管，乱清会把 TAB 的
+     * 格式打回裸名（flat 前缀的残留由模式切换逻辑 / TAB 自己的事件愈合）。
+     */
+    void resetAll() {
+        for (final Player viewer : proxy.getAllPlayers()) {
+            stripViewerFakes(viewer);
+            for (final Player p : proxy.getAllPlayers()) {
+                final TabListEntry entry = viewer.getTabList().getEntry(p.getUniqueId()).orElse(null);
+                if (entry != null && !entry.isListed()) {
+                    setListed(entry, true);
                 }
+            }
+        }
+    }
+
+    private void stripViewerFakes(final Player viewer) {
+        final TabList tabList = viewer.getTabList();
+        for (int i = 0; i < FAKE_RANGE; i++) {
+            final UUID fakeId = fakeUuid(i);
+            if (tabList.containsEntry(fakeId)) {
+                tabList.removeEntry(fakeId);
             }
         }
     }
