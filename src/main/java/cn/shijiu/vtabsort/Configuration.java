@@ -10,13 +10,16 @@ import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
+import java.util.TreeMap;
 
 /**
- * config.toml 的读取与校验。
+ * config.toml 的读取与校验（v2：display/layout/flat/servers.names）。
  *
  * <p>铁律：**读失败的时候保留上一次的配置**，绝不让插件变成半成品。
  * 所有取值都带默认值，{@link #load} 出错时返回 error 而不是 null 之后裸奔。
+ * 缺行/写歪的键走默认值（fallback 要留），但不做旧版配置迁移（服主定的规矩）。
  */
 public final class Configuration {
 
@@ -39,28 +42,56 @@ public final class Configuration {
         }
     }
 
-    /** 子服优先级（全部已转小写）。 */
+    private final boolean layoutMode;
+    private final int maxColumns;
+    private final int rows;
+    private final String headerFormat;
+    private final boolean separator;
+    private final boolean truncate;
+    private final String overflowFormat;
+    private final int blankPing;
+    private final String defaultSkin;
+    private final String flatPrefix;
+    private final boolean flatSort;
     private final List<String> serverOrder;
-    /** 没列进 serverOrder 的服排最前还是最后。 */
+    private final Map<String, String> serverNames;
     private final boolean unknownFirst;
-    /** 同服内排序方式：true = 加入顺序，false = 名字字母序。 */
     private final boolean sameServerByJoin;
     private final Map<String, String> messages;
     private final boolean autoReload;
     private final int autoReloadIntervalSeconds;
     private final int refreshDelayMs;
+    private final int reassertSeconds;
 
-    private Configuration(final List<String> serverOrder, final boolean unknownFirst,
-                          final boolean sameServerByJoin, final Map<String, String> messages,
+    private Configuration(final boolean layoutMode, final int maxColumns, final int rows,
+                          final String headerFormat, final boolean separator, final boolean truncate,
+                          final String overflowFormat, final int blankPing, final String defaultSkin,
+                          final String flatPrefix, final boolean flatSort,
+                          final List<String> serverOrder, final Map<String, String> serverNames,
+                          final boolean unknownFirst, final boolean sameServerByJoin,
+                          final Map<String, String> messages,
                           final boolean autoReload, final int autoReloadIntervalSeconds,
-                          final int refreshDelayMs) {
+                          final int refreshDelayMs, final int reassertSeconds) {
+        this.layoutMode = layoutMode;
+        this.maxColumns = maxColumns;
+        this.rows = rows;
+        this.headerFormat = headerFormat;
+        this.separator = separator;
+        this.truncate = truncate;
+        this.overflowFormat = overflowFormat;
+        this.blankPing = blankPing;
+        this.defaultSkin = defaultSkin;
+        this.flatPrefix = flatPrefix;
+        this.flatSort = flatSort;
         this.serverOrder = serverOrder;
+        this.serverNames = serverNames;
         this.unknownFirst = unknownFirst;
         this.sameServerByJoin = sameServerByJoin;
         this.messages = messages;
         this.autoReload = autoReload;
         this.autoReloadIntervalSeconds = autoReloadIntervalSeconds;
         this.refreshDelayMs = refreshDelayMs;
+        this.reassertSeconds = reassertSeconds;
     }
 
     public static Configuration defaults() {
@@ -73,16 +104,82 @@ public final class Configuration {
         order.add("minigame");
         order.add("bedwars");
         order.add("killer");
+        final Map<String, String> names = new TreeMap<>();
+        names.put("lobby", "大厅");
+        names.put("survival", "生存净土");
+        names.put("survival2", "生存乐土");
+        names.put("industry", "工业基地");
+        names.put("starvalley", "星露谷");
+        names.put("minigame", "电玩中心");
+        names.put("bedwars", "起床战争");
+        names.put("killer", "限时游戏");
         final Map<String, String> messages = new LinkedHashMap<>();
-        messages.put("reloaded", "配置已重新加载，Tab 排序已刷新");
+        messages.put("reloaded", "配置已重新加载，Tab 已刷新");
         messages.put("reload-failed", "配置加载失败，用的还是旧配置，原因：#reason#");
         messages.put("no-permission", "你没有权限这么做");
-        messages.put("usage", "用法：/vtabsort reload | version");
-        return new Configuration(order, false, false, messages, false, 3, 200);
+        messages.put("usage", "用法：/vtabsort reload | layout | version");
+        return new Configuration(true, 4, 20,
+                "&e#name# &7· #count#", true, true,
+                "&8…及 #count# 人", 0, "",
+                "&7[&e#name#&7] ", true,
+                order, names, false, false, messages,
+                false, 3, 200, 3);
     }
 
+    /** true = layout 固定网格模式；false = flat 普通列表模式。 */
+    public boolean layoutMode() {
+        return layoutMode;
+    }
+
+    public int maxColumns() {
+        return maxColumns;
+    }
+
+    /** 客户端每列行数上限（网格实际行数自适应，见 LayoutManager）。 */
+    public int rows() {
+        return rows;
+    }
+
+    public String headerFormat() {
+        return headerFormat;
+    }
+
+    public boolean separator() {
+        return separator;
+    }
+
+    public boolean truncate() {
+        return truncate;
+    }
+
+    public String overflowFormat() {
+        return overflowFormat;
+    }
+
+    public int blankPing() {
+        return blankPing;
+    }
+
+    public String defaultSkin() {
+        return defaultSkin;
+    }
+
+    public String flatPrefix() {
+        return flatPrefix;
+    }
+
+    public boolean flatSort() {
+        return flatSort;
+    }
+
+    /** 子服优先级（全部已转小写）。 */
     public List<String> serverOrder() {
         return serverOrder;
+    }
+
+    /** 子服显示名（键已转小写）；没配的用服名原文。 */
+    public String serverDisplayName(final String server) {
+        return serverNames.getOrDefault(server, server);
     }
 
     public boolean unknownFirst() {
@@ -107,6 +204,10 @@ public final class Configuration {
 
     public int refreshDelayMs() {
         return refreshDelayMs;
+    }
+
+    public int reassertSeconds() {
+        return reassertSeconds;
     }
 
     // ------------------------------------------------------------------
@@ -141,9 +242,25 @@ public final class Configuration {
     }
 
     private static Configuration fromMap(final Map<String, Object> raw) {
+        final String mode = TomlLite.string(raw, "display.mode", "layout").trim();
+        final boolean layoutMode = !"flat".equalsIgnoreCase(mode); // 只有 flat 精确匹配才走 flat，写歪了回 layout
+
+        final int maxColumns = (int) clamp(TomlLite.integer(raw, "layout.max-columns", 4), 1, 10);
+        final int rows = (int) clamp(TomlLite.integer(raw, "layout.rows", 20), 5, 40);
+        final String headerFormat = TomlLite.string(raw, "layout.header-format",
+                defaults().headerFormat());
+        final boolean separator = TomlLite.bool(raw, "layout.separator", true);
+        final boolean truncate = TomlLite.bool(raw, "layout.truncate", true);
+        final String overflowFormat = TomlLite.string(raw, "layout.overflow-format",
+                defaults().overflowFormat());
+        final int blankPing = (int) clamp(TomlLite.integer(raw, "layout.blank-ping", 0), 0, 60_000);
+        final String defaultSkin = TomlLite.string(raw, "layout.default-skin", "").trim();
+
+        final String flatPrefix = TomlLite.string(raw, "flat.prefix-format", defaults().flatPrefix());
+        final boolean flatSort = TomlLite.bool(raw, "flat.sort", true);
+
         final List<String> order = TomlLite.lowercase(
-                TomlLite.list(raw, "servers.order", defaults().serverOrder));
-        // 去重（同一个服写两遍只认第一个位置）
+                TomlLite.list(raw, "servers.order", defaults().serverOrder()));
         final List<String> dedup = new ArrayList<>();
         for (final String s : order) {
             if (!s.isEmpty() && !dedup.contains(s)) {
@@ -155,6 +272,19 @@ public final class Configuration {
         final boolean byJoin = "join".equalsIgnoreCase(
                 TomlLite.string(raw, "general.same-server-order", "name").trim());
 
+        // [servers.names] 整段：键是服名（转小写），值是显示名
+        final Map<String, String> names = new TreeMap<>();
+        for (final Map.Entry<String, Object> e : raw.entrySet()) {
+            final String key = e.getKey();
+            if (key.startsWith("servers.names.") && e.getValue() != null) {
+                final String server = key.substring("servers.names.".length()).trim().toLowerCase(Locale.ROOT);
+                final String display = String.valueOf(e.getValue());
+                if (!server.isEmpty() && !display.isEmpty()) {
+                    names.put(server, display);
+                }
+            }
+        }
+
         final Map<String, String> messages = new LinkedHashMap<>();
         messages.put("reloaded", TomlLite.string(raw, "messages.reloaded", defaults().message("reloaded")));
         messages.put("reload-failed", TomlLite.string(raw, "messages.reload-failed", defaults().message("reload-failed")));
@@ -163,8 +293,17 @@ public final class Configuration {
 
         final boolean autoReload = TomlLite.bool(raw, "advanced.auto-reload", false);
         final int interval = (int) Math.max(1L, TomlLite.integer(raw, "advanced.auto-reload-interval-seconds", 3L));
-        final int delay = (int) Math.min(Math.max(0L, TomlLite.integer(raw, "advanced.refresh-delay-ms", 200L)), 10_000L);
-        return new Configuration(dedup, unknownFirst, byJoin, messages, autoReload, interval, delay);
+        final int delay = (int) clamp(TomlLite.integer(raw, "advanced.refresh-delay-ms", 200), 0, 10_000);
+        final int reassert = (int) clamp(TomlLite.integer(raw, "advanced.reassert-seconds", 3), 0, 60);
+
+        return new Configuration(layoutMode, maxColumns, rows, headerFormat, separator, truncate,
+                overflowFormat, blankPing, defaultSkin, flatPrefix, flatSort,
+                dedup, names, unknownFirst, byJoin, messages,
+                autoReload, interval, delay, reassert);
+    }
+
+    private static long clamp(final long v, final long min, final long max) {
+        return Math.min(Math.max(v, min), max);
     }
 
     /** 消息里的 #xxx# 换成实参。 */

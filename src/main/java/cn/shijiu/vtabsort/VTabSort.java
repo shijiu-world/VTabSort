@@ -12,7 +12,6 @@ import com.velocitypowered.api.event.player.ServerConnectedEvent;
 import com.velocitypowered.api.event.proxy.ProxyInitializeEvent;
 import com.velocitypowered.api.plugin.Plugin;
 import com.velocitypowered.api.plugin.annotation.DataDirectory;
-import com.velocitypowered.api.proxy.Player;
 import com.velocitypowered.api.proxy.ProxyServer;
 import net.kyori.adventure.text.Component;
 import org.slf4j.Logger;
@@ -25,20 +24,22 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
- * VTabSort —— Tab 列表按子服排序（纯代理端，零依赖，子服什么都不用装）。
+ * VTabSort —— Tab 列表展示（Velocity 代理端，零依赖，子服什么都不用装）。
  *
- * <p>原理：MC 1.21.2+ 的 tab 协议有 {@code listOrder} 字段（UPDATE_LIST_ORDER），
- * 客户端原生按它排序、完全不经过 scoreboard team。本插件只做这一件事：
+ * <p>两种模式（config.toml 的 [display].mode，reload 即切换）：
  *
  * <ul>
- *   <li>不碰 team → 后端小游戏用 {@code nametagVisibility} 藏名字照常生效，
- *       VelocityScoreboardAPI 的代理 team 优先级问题与它无关；</li>
- *   <li>不改显示名 → 名字格式（前后缀、颜色）继续归 TAB / 后端管，
- *       UPDATE_DISPLAY_NAME 和 UPDATE_LIST_ORDER 是两个独立 action，互不覆盖；</li>
- *   <li>空服自然没条目、超员自然续行 —— 原版列表的弹性全保留。</li>
+ *   <li><b>layout</b>：Hypixel 式固定网格。每列头顶子服名（在线数可配），
+ *       假条目补满空槽；子服数超过 max-columns 时人数最少的并进共享列
+ *       （分节按人数降序、分节间空一行）。网格行数自适应：人数最多的
+ *       子服几人就是几+1 行（受「客户端开出 N 列的最小行数」约束，上限 rows）。</li>
+ *   <li><b>flat</b>：普通列表。名字前缀子服名（格式可配），可选按子服排序。</li>
  * </ul>
  *
- * <p>老客户端（&lt;1.21.2）没有这个字段，自动走原版顺序，无害兜底。
+ * <p>两条不变式：①不碰 scoreboard team → 后端小游戏藏名字照常；
+ * ②真实玩家的 tab 条目由 TAB（global playerlist）创建，本插件只调
+ * listOrder / listed /（flat 模式）显示名，条目不存在的就等下一轮
+ * （事件直刷 + refresh-delay-ms 延迟补发 + reassert 周期校准三层兜底）。
  */
 @Plugin(
         id = "vtabsort",
@@ -46,7 +47,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
         // ⚠️ 版本号必须是编译期常量 —— 走 BuildConstants 间接引过来（templating-maven-plugin 生成）。
         // 🔴 别改回字面量：注解处理器会按这个值重写 velocity-plugin.json。
         version = BuildConstants.VERSION,
-        description = "Tab 列表按子服排序：用 1.21.2+ 的 listOrder 协议字段，不碰 scoreboard team，不影响小游戏藏名字。",
+        description = "Tab 展示：layout 固定网格（子服列头 + 假人补位）/ flat 前缀列表；listOrder 协议字段，不碰 scoreboard team。",
         authors = {"拾玖世界"}
 )
 public final class VTabSort {
@@ -55,6 +56,8 @@ public final class VTabSort {
     private final Logger logger;
     private final Path dataDirectory;
     private final Sorter sorter;
+    private final LayoutManager layoutManager;
+    private final FlatManager flatManager;
 
     private volatile Configuration config;
     /** 上一次读到的 config.toml 修改时间，热重载用。 */
@@ -68,6 +71,8 @@ public final class VTabSort {
         this.logger = logger;
         this.dataDirectory = dataDirectory;
         this.sorter = new Sorter(proxy);
+        this.layoutManager = new LayoutManager(proxy, sorter);
+        this.flatManager = new FlatManager(proxy, sorter);
         this.config = Configuration.defaults();
     }
 
@@ -76,55 +81,55 @@ public final class VTabSort {
         reload(null);
         registerCommands();
         startAutoReload();
-        // 起服时一般没玩家，这发是给「热重载插件 / 重启代理但玩家还在」的场合兜底
-        sorter.refreshAll(config);
-        logger.info("[vtabsort] VTabSort 已就绪 —— Tab 按子服排序（listOrder 协议字段，不碰 team）。"
-                + " 子服顺序：" + String.join(" > ", config.serverOrder()));
+        startReassert();
+        logger.info("[vtabsort] VTabSort 已就绪 —— 模式："
+                + (config.layoutMode()
+                ? "layout 固定网格（列头=子服名，假人补位，行数自适应）"
+                : "flat 普通列表（前缀" + (config.flatSort() ? "+排序" : "") + "）")
+                + "；子服顺序：" + String.join(" > ", config.serverOrder()));
     }
 
     // ------------------------------------------------------------------
-    // 事件：任何影响顺序的变化都全量重刷（人数 < 几百，重算是 O(n log n)，随便刷）
+    // 事件：任何影响布局的变化都全量重算（人数 < 几百，重算是毫秒级）
     // ------------------------------------------------------------------
 
-    /** 进代理：既是新条目、也是新 viewer，两头都要刷。 */
     @Subscribe
     public void onPostLogin(final PostLoginEvent event) {
-        final Player player = event.getPlayer();
-        sorter.trackJoin(player.getUniqueId());
-        sorter.refreshViewer(player, config); // 新 viewer 先把自己看得见的都排好
-        refreshAllSoon();                     // 别人的列表里也多了这个新条目
+        sorter.trackJoin(event.getPlayer().getUniqueId());
+        refreshAllSoon(); // 新 viewer 要补假条目，别人的网格里也多了这个人
     }
 
-    /** 切子服：顺序基数变了。 */
     @Subscribe
     public void onServerConnected(final ServerConnectedEvent event) {
-        refreshAllSoon();
+        refreshAllSoon(); // 换列/换分节，行数也可能跟着变
     }
 
-    /** 退代理：同服其他人的组内序号会顺移。 */
     @Subscribe
     public void onDisconnect(final DisconnectEvent event) {
         sorter.forget(event.getPlayer().getUniqueId());
         refreshAllSoon();
     }
 
-    /**
-     * 立即刷一发 + 按 {@code advanced.refresh-delay-ms} 延迟再补一发。
-     *
-     * <p>为什么要补：tab 条目是别的插件（TAB 的 global playerlist 等）建的，
-     * 事件触发那一瞬间新玩家的条目可能还没塞进各 viewer 的 TabList —— 立即那发
-     * 会漏掉它，延迟这一发能兜住。条目还没建好就再漏（delay 配 0 可关）。
-     */
+    /** 立即刷一发 + 延迟补一发（兜 TAB 建条目的竞态），全 diff 无变化不发包。 */
     private void refreshAllSoon() {
-        sorter.refreshAll(config);
+        rebuildNow();
         final int delay = config.refreshDelayMs();
         if (delay <= 0 || !delayedRefreshPending.compareAndSet(false, true)) {
             return;
         }
         proxy.getScheduler().buildTask(this, () -> {
             delayedRefreshPending.set(false);
-            sorter.refreshAll(config);
+            rebuildNow();
         }).delay(delay, TimeUnit.MILLISECONDS).schedule();
+    }
+
+    private void rebuildNow() {
+        final Configuration cfg = config;
+        if (cfg.layoutMode()) {
+            layoutManager.applyAll(layoutManager.build(cfg), cfg);
+        } else {
+            flatManager.applyAll(cfg);
+        }
     }
 
     // ------------------------------------------------------------------
@@ -156,8 +161,15 @@ public final class VTabSort {
                     }
                     reload(source);
                 }
+                case "layout" -> {
+                    if (!source.hasPermission("vtabsort.reload")) {
+                        send(source, config.message("no-permission"));
+                        return;
+                    }
+                    printLayout(source);
+                }
                 case "version", "info" -> send(source, "VTabSort " + version()
-                        + " —— Tab 按子服排序（listOrder，不碰 team）");
+                        + " —— Tab 展示（layout 网格 / flat 前缀），不碰 scoreboard team");
                 default -> send(source, config.message("usage"));
             }
         }
@@ -165,9 +177,37 @@ public final class VTabSort {
         @Override
         public List<String> suggest(final Invocation invocation) {
             if (invocation.arguments().length <= 1) {
-                return List.of("reload", "version");
+                return List.of("reload", "layout", "version");
             }
             return List.of();
+        }
+    }
+
+    /** 无客户端也能核对布局：把当前网格的分列模型打给命令发起者。 */
+    private void printLayout(final CommandSource source) {
+        final Configuration cfg = config;
+        if (!cfg.layoutMode()) {
+            send(source, "当前是 flat 模式：排序 " + (cfg.flatSort() ? "开" : "关")
+                    + "，前缀格式 " + cfg.flatPrefix());
+            return;
+        }
+        final LayoutModel model = layoutManager.build(cfg);
+        send(source, "layout 网格：" + model.columnCount + " 列 × " + model.rows
+                + " 行（上限 " + cfg.rows() + "），槽位 " + model.slots.size()
+                + "，隐藏 " + model.hidden.size());
+        for (int i = 0; i < model.columns.size(); i++) {
+            final StringBuilder sb = new StringBuilder("列" + (i + 1) + "：");
+            for (final LayoutModel.SectionDesc sd : model.columns.get(i).sections) {
+                sb.append(sd.display).append('(').append(sd.count);
+                if (sd.shown != sd.count) {
+                    sb.append(" 显").append(sd.shown);
+                }
+                if (sd.hidden > 0) {
+                    sb.append(" 藏").append(sd.hidden);
+                }
+                sb.append(") ");
+            }
+            send(source, sb.toString().trim());
         }
     }
 
@@ -188,12 +228,21 @@ public final class VTabSort {
             }
             return;
         }
+        final boolean wasLayout = config.layoutMode();
         config = result.config();
         lastModified = configMtime();
-        sorter.refreshAll(config); // 顺序表可能变了，立刻按新顺序刷一遍
-        logger.info("[vtabsort] 配置已加载 —— 子服顺序：" + String.join(" > ", config.serverOrder())
-                + "；未列出的服排" + (config.unknownFirst() ? "最前" : "最后")
-                + "；同服内按" + (config.sameServerByJoin() ? "加入顺序" : "名字") + "排。");
+        if (config.layoutMode() != wasLayout) {
+            // 模式切换：先把对家留下的痕迹清干净
+            if (config.layoutMode()) {
+                flatManager.resetDisplayNames(); // flat→layout：清前缀显示名
+            } else {
+                layoutManager.stripAll();         // layout→flat：拔全部假条目
+            }
+        }
+        rebuildNow();
+        logger.info("[vtabsort] 配置已加载 —— 模式 "
+                + (config.layoutMode() ? "layout" : "flat")
+                + "；子服顺序：" + String.join(" > ", config.serverOrder()));
         if (feedback != null) {
             send(feedback, config.message("reloaded"));
         }
@@ -222,6 +271,22 @@ public final class VTabSort {
         // 中途改了要重启代理才生效；开关（auto-reload）则是每次跑 task 都看，随时可改。
         }).delay(3, TimeUnit.SECONDS)
                 .repeat(Math.max(1L, config.autoReloadIntervalSeconds()), TimeUnit.SECONDS)
+                .schedule();
+    }
+
+    /**
+     * 周期性校准（advanced.reassert-seconds，0=关）：后端 Paper 会把自己玩家的
+     * listOrder 重置回 0、TAB 也可能在事件里覆写显示名/重新 listed —— 全量
+     * 重算 + diff 应用，没变化一个包都不发，有变化几秒内拉回来。
+     */
+    private void startReassert() {
+        final int seconds = Math.max(0, config.reassertSeconds());
+        if (seconds == 0) {
+            return;
+        }
+        proxy.getScheduler().buildTask(this, this::rebuildNow)
+                .delay(seconds, TimeUnit.SECONDS)
+                .repeat(seconds, TimeUnit.SECONDS)
                 .schedule();
     }
 

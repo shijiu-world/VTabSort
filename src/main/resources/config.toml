@@ -1,20 +1,50 @@
 # ============================================================
-#  VTabSort —— Tab 列表按子服排序
-#  原理：MC 1.21.2+ 的 tab 协议字段 listOrder（客户端原生排序），
-#        不碰 scoreboard team —— 小游戏藏名字 / 后端排序不受影响。
-#  改完之后：游戏内或控制台敲 /vtabsort reload（需要 vtabsort.reload 权限），
-#            或者开着 [advanced].auto-reload 自己会热重载。
-#  ⚠️ 写在 # 后面的是注释。没加引号的值不要在同一行再写 # 注释。
+#  VTabSort v2 —— Tab 列表展示（Velocity 代理端，零依赖）
+#  两种模式（[display].mode 切换，改完 /vtabsort reload）：
+#    layout = Hypixel 式固定网格：每列头顶子服名、假人补满
+#             列数超 [layout].max-columns 时，人数最少的子服
+#             自动并进共享列（分节按人数降序、分节间空一行）
+#    flat   = 普通列表：名字前缀子服名 + 可选按子服排序
+#  原理：1.21.2+ 协议字段 listOrder（客户端原生排序）+ 假条目，
+#        不碰 scoreboard team —— 小游戏藏名字不受影响。
+#  ⚠️ # 后面是注释；没加引号的值不要在同一行再写 #。
 # ============================================================
 
+[display]
+mode = "layout"        # layout | flat
+
 # ------------------------------------------------------------
-# 子服优先级：先出现的排在 Tab 列表最前面。
-# 服名写 velocity.toml 的 [servers] 里的名字，大小写不敏感。
-# 没列进来的服按 [servers].unknown 的规则排。
+# layout 模式
+#   rows = 客户端每列行数上限（原版 20）。网格实际行数自适应：
+#          取「内容需要的高度」（人数最多的子服几人就是几+1 行）
+#          与「让客户端开出 N 列所需的最小行数」（4 列≥16 行）
+#          的较大值，上限 rows。进服若看到列数不对（如冒出 6 列），
+#          把 rows 改成你客户端实测的行数上限（如 15）。
+# ------------------------------------------------------------
+[layout]
+max-columns = 4
+rows = 20
+header-format = "&e#name# &7· #count#"   # 列头/分节头；#name# = 子服显示名，#count# = 在线数
+separator = true       # 同列两个子服分节之间空一行
+truncate = true        # 单列内容超过 rows 上限时折叠成「…及N人」（自适应行数下很少触发）；false = 允许溢出（网格会变形）
+overflow-format = "&8…及 #count# 人"
+blank-ping = 0         # 假人条目的伪装延迟（毫秒；0 = 满信号）
+default-skin = ""      # 可选：假人皮肤（textures 属性的 base64 值）；空 = 默认皮肤
+
+# ------------------------------------------------------------
+# flat 模式
+# ------------------------------------------------------------
+[flat]
+prefix-format = "&7[&e#name#&7] "   # 名字前缀；#name# = 子服显示名
+sort = true            # true = 按 [servers].order 排序；false = 原版顺序
+
+# ------------------------------------------------------------
+# 子服清单：order = 列顺序 / flat 排序优先级（先出现靠前）。
+# names = 显示名（列头和前缀里用）。
 # ------------------------------------------------------------
 [servers]
 order = [
-    "lobby",      # 传送大厅
+    "lobby",      # 大厅
     "survival",   # 生存净土
     "survival2",  # 生存乐土
     "industry",   # 工业基地
@@ -23,37 +53,39 @@ order = [
     "bedwars",    # 起床战争
     "killer",     # 限时游戏
 ]
+unknown = "after"      # 没写进 order 的服：after = 排最后 / before = 排最前
 
-# 没写进 order 的子服排在哪：
-#   after  = 全部排最后（它们之间再按服名/玩家名字排）
-#   before = 全部排最前（同上）
-unknown = "after"
+[servers.names]
+lobby = "大厅"
+survival = "生存净土"
+survival2 = "生存乐土"
+industry = "工业基地"
+starvalley = "星露谷"
+minigame = "电玩中心"
+bedwars = "起床战争"
+killer = "限时游戏"
 
-# ------------------------------------------------------------
-# 同一个子服里玩家按什么排：
-#   name     = 名字字母序（大小写不敏感）
-#   join     = 谁先连上代理谁在前
-# ------------------------------------------------------------
 [general]
-same-server-order = "name"
+same-server-order = "name"   # 同一子服内：name = 名字序 / join = 加入顺序
 
 # ------------------------------------------------------------
 # 提示语（命令反馈用）
 # ------------------------------------------------------------
 [messages]
-reloaded = "配置已重新加载，Tab 排序已刷新"
+reloaded = "配置已重新加载，Tab 已刷新"
 reload-failed = "配置加载失败，用的还是旧配置，原因：#reason#"
 no-permission = "你没有权限这么做"
-usage = "用法：/vtabsort reload | version"
+usage = "用法：/vtabsort reload | layout | version"
 
 # ------------------------------------------------------------
 # 杂项
-#   auto-reload = 改了本文件不用敲命令，自己会在几秒内热重载（按修改时间判断）
-#   refresh-delay-ms = 玩家进服/切服后再补一发排序的延迟（毫秒）：
-#     tab 条目是别的插件（TAB 等）建的，事件触发时可能还没建好，
-#     延迟补一发能兜住这个竞态。0 = 不补。
+#   refresh-delay-ms = 玩家进服/切服后再补一发刷新的延迟（毫秒），
+#     兜 TAB 建条目的竞态。0 = 不补。
+#   reassert-seconds = 周期性校准（秒；0 = 关）：后端 Paper 会把玩家
+#     条目的 listOrder 重置回 0、TAB 也可能覆写显示名，靠它拉回来。
 # ------------------------------------------------------------
 [advanced]
 auto-reload = false
 auto-reload-interval-seconds = 3
 refresh-delay-ms = 200
+reassert-seconds = 3
