@@ -79,15 +79,9 @@ final class LayoutModel {
      * 或者少列几个子服即可消除。
      */
     final boolean exceedsColumns;
-    /**
-     * 本轮自动去掉了分节空行（配置是开的）—— 为了让更多子服独占列、
-     * 或者让共享列装得下。
-     */
-    final boolean separatorDropped;
-
     LayoutModel(final List<Slot> slots, final Map<UUID, Integer> orders, final Set<UUID> hidden,
                 final List<ColumnDesc> columns, final int rows,
-                final boolean exceedsColumns, final boolean separatorDropped) {
+                final boolean exceedsColumns) {
         this.slots = slots;
         this.orders = orders;
         this.hidden = hidden;
@@ -95,6 +89,5 @@ final class LayoutModel {
         this.rows = rows;
         this.columnCount = columns.size();
         this.exceedsColumns = exceedsColumns;
-        this.separatorDropped = separatorDropped;
     }
 }

@@ -225,7 +225,6 @@ public final class VTabSort {
         send(source, "layout 网格：" + model.columnCount + " 列 × " + model.rows
                 + " 行（行数上限 " + cfg.rows() + "，列预算 " + cfg.maxColumns()
                 + (model.exceedsColumns ? "，内容塞不下已超列预算" : "")
-                + (model.separatorDropped ? "，已自动去掉分节空行" : "")
                 + "），槽位 " + model.slots.size() + "，隐藏 " + model.hidden.size());
         for (int i = 0; i < model.columns.size(); i++) {
             final StringBuilder sb = new StringBuilder("列" + (i + 1) + "：");

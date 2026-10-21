@@ -300,23 +300,28 @@ function spill(sec,n){
 
 const colHeight=(col,sep)=>col.parts.reduce((a,p)=>a+1+(p.to-p.from),0)
   + (sep&&col.parts.length>1 ? col.parts.length-1 : 0);
-const whole=(sec)=>({sec,from:0,to:sec.players.length,part:1,parts:1});
 
-/** 共享的子服按顺序装列，每列 ≤ cap 行；自己就超一列的服先自己续列。 */
+/**
+ * 共享的子服按顺序流式装列，每列 ≤ cap 行：同列内分节间空一格；
+ * 空完剩不到 2 行（列头会落在行末）就换新列（新列顶上不空格）；
+ * 一个服放不完就续到下一列，续段重复列头。
+ */
 function packShared(shared,cap,sep){
-  const per=Math.max(1,cap-1), cols=[];
-  let cur=[];
+  const cols=[], partsOf=new Map();
+  let cur=[], used=0;
   for(const s of shared){
-    if(s.players.length>per){
-      if(cur.length){ cols.push({parts:cur}); cur=[]; }
-      cols.push(...spill(s,need(s.players.length,per)));
-      continue;
+    const n=s.players.length; let at=0;
+    while(at<n){
+      let gap=(cur.length&&sep)?1:0;
+      if(cap-used-gap<2&&cur.length){ cols.push({parts:cur}); cur=[]; used=0; gap=0; }
+      const take=Math.min(Math.max(1,cap-used-gap-1),n-at);
+      const no=(partsOf.get(s)||0)+1; partsOf.set(s,no);
+      cur.push({sec:s,from:at,to:at+take,part:no,parts:0});
+      used+=gap+1+take; at+=take;
     }
-    const next=[...cur,whole(s)];
-    if(cur.length&&colHeight({parts:next},sep)>cap){ cols.push({parts:cur}); cur=[whole(s)]; }
-    else cur=next;
   }
   if(cur.length) cols.push({parts:cur});
+  for(const col of cols) for(const p of col.parts) p.parts=partsOf.get(p.sec);
   return cols;
 }
 
@@ -334,22 +339,21 @@ function tryAllocate(secs,max,cap,sep){
     if(tail.length) cols.push(...packShared(tail,cap,sep));
     if(cols.length<=max) return {cols,own:k,sep,fitted:true};
   }
-  return {cols:packShared(secs,cap,sep),own:0,sep,fitted:false};
+  // 只有一个服时它不算「共享」，照独占续列的规矩均分
+  const fb=secs.length===1 ? spill(secs[0],need(secs[0].players.length,per)) : packShared(secs,cap,sep);
+  return {cols:fb,own:0,sep,fitted:false};
 }
 
-/** 分节空行可牺牲：去掉它能让更多子服独占列、或从「超预算」变成装得下。 */
-function allocate(secs,max,cap,sepWanted){
-  if(!secs.length) return {cols:[],own:0,sep:sepWanted,fitted:true};
-  const a=tryAllocate(secs,max,cap,sepWanted);
-  if(!sepWanted) return a;
-  const b=tryAllocate(secs,max,cap,false);
-  if(a.fitted) return (b.fitted&&b.own>a.own) ? b : a;
-  return b.fitted ? b : a;
+/** 分节空行不再自动牺牲：共享列里上一个服和下一个列头之间一定隔一格。 */
+function allocate(secs,max,cap,sep){
+  if(!secs.length) return {cols:[],own:0,sep,fitted:true};
+  return tryAllocate(secs,max,cap,sep);
 }
 
 function buildLayout(){
-  // 1) 分节：[servers.names] 里全部保留（0 人也占列头），组内按名字排序
-  const secs=S.servers.map(s=>({
+  // 1) 分节：只要有人在线的子服（0 人的整个不出现、连列头都没有 → 也不会有空列），
+  //    组内按名字排序
+  const secs=S.servers.filter(s=>s.players.length>0).map(s=>({
     key:s.key, display:s.display||s.key,
     players:[...s.players].sort((a,b)=>a.name.toLowerCase().localeCompare(b.name.toLowerCase()))
   }));
@@ -359,7 +363,7 @@ function buildLayout(){
   // 2) 分列（含续列 + 尾部共享列）
   const cap=Math.max(2,S.rows);
   const plan=allocate(secs,Math.max(1,S.maxCols),cap,S.sep);
-  const cols=plan.cols, sep=plan.sep, sepDropped=S.sep&&!plan.sep;
+  const cols=plan.cols, sep=plan.sep;
 
   // 3) 自适应行数
   const c=Math.max(1,cols.length);
@@ -386,7 +390,7 @@ function buildLayout(){
   }
   return {slots,hidden:new Set(S.connecting.map(p=>p.uuid)),desc,
           rows:R,cols:cols.length,natural,rMin,
-          exceedsColumns:!plan.fitted,sepDropped,own:plan.own};
+          exceedsColumns:!plan.fitted,own:plan.own};
 }
 
 /* flat 模式：前缀 + 可选排序（排序基数 = 人数降序排名） */
@@ -497,8 +501,7 @@ function dump(L){
   }
   const out=[`grid ${L.cols}x${L.rows}  slots=${L.slots.length}  natural=${L.natural} rMin=${L.rMin}`
     +`  独占列的服=${L.own}`
-    +(L.exceedsColumns?`\n⚠ 内容塞不进 ${S.maxCols} 列×${S.rows} 行：保行数、列数溢出到 ${L.cols}`:'')
-    +(L.sepDropped?'\n（本轮自动去掉了分节空行，换来更紧凑的网格）':'')];
+    +(L.exceedsColumns?`\n⚠ 内容塞不进 ${S.maxCols} 列×${S.rows} 行：保行数、列数溢出到 ${L.cols}`:'')];
   L.desc.forEach((col,i)=>{
     out.push(`列${i+1}:`);
     col.forEach(s=>out.push(`  ${s.display} (${s.key}) count=${s.total}`

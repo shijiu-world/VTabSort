@@ -35,11 +35,14 @@ import java.util.UUID;
  *
  * <p><b>v3 分列规则</b>（不再有服主排的 order，也不再折叠）：
  * <ol>
+ *   <li><b>0 人的子服整个不出现</b>（连列头都没有），因此也不会有空列；
+ *       网格随人数变化收缩/扩张；</li>
  *   <li>子服按<b>人数降序</b>排（平手按服名升序），列的左右顺序就是这个顺序；</li>
  *   <li>一个子服装不下一列（人数 &gt; rows-1）就<b>续开一列</b>，
  *       续的列紧跟在它后面、列头文字完全一样（含总人数）；</li>
  *   <li>列预算（max-columns）不够时，排在后面的小服<b>并进共享列</b>
- *       （分节按人数降序、分节间空一行），共享列永远在<b>最后一列</b>；</li>
+ *       （分节按人数降序流式往下排，分节间固定空一格；列头落在行末就换新列，
+ *       一个服放不完就续到下一列并重复列头），共享列永远在<b>最后</b>；</li>
  *   <li>共享列塞不下也不截断、不折叠 —— 允许溢出（网格变形但不丢人）。</li>
  * </ol>
  */
@@ -76,22 +79,16 @@ final class LayoutManager {
             byServer.computeIfAbsent(s, k -> new ArrayList<>()).add(p);
         }
 
-        // 2) 子服清单：[servers.names] 里列出的全部（0 人也占分节，网格稳定）
-        //    + 没列出但有人在线的（新加的后端不配也能显示）
-        final List<String> servers = new ArrayList<>(cfg.knownServers());
-        final List<String> extra = new ArrayList<>();
-        for (final String s : byServer.keySet()) {
-            if (!servers.contains(s)) {
-                extra.add(s);
-            }
-        }
-        Collections.sort(extra);
-        servers.addAll(extra);
+        // 2) 子服清单：**只要有人在线的**。0 人的子服整个不出现（连列头都没有），
+        //    所以也不会有空列 —— 网格会随着人走空而收缩，这是服主定的规矩。
+        //    [servers.names] 此时只负责提供显示名，不再决定谁占分节。
+        final List<String> servers = new ArrayList<>(byServer.keySet());
+        Collections.sort(servers); // 先按服名排，给下面的人数平手兜一个稳定序
 
         final Comparator<Player> pc = sorter.playerComparator(cfg);
         final List<Sec> secs = new ArrayList<>();
         for (final String s : servers) {
-            final List<Player> ps = new ArrayList<>(byServer.getOrDefault(s, List.of()));
+            final List<Player> ps = new ArrayList<>(byServer.get(s));
             ps.sort(pc);
             secs.add(new Sec(s, cfg.serverDisplayName(s), ps));
         }
@@ -132,8 +129,7 @@ final class LayoutManager {
         for (final Player p : noServer) {
             hidden.add(p.getUniqueId());
         }
-        return new LayoutModel(slots, orders, hidden, colDescs, r,
-                !plan.fitted(), cfg.separator() && !plan.separator());
+        return new LayoutModel(slots, orders, hidden, colDescs, r, !plan.fitted());
     }
 
     /**
@@ -143,27 +139,15 @@ final class LayoutManager {
      * 容量续开列（续列紧跟其后、列头文字不变）。列预算不够时，排在后面的
      * 小服并进共享列（永远在最后）。
      *
-     * <p>特例：如果「剩下的服」只有一个，那它根本不该叫共享列 —— 直接当独占
-     * 列处理（能续几列续几列）。这样一个 100 人的大服在 max-columns=4 下会
-     * 摊成 4 列 ×25 人，而不是挤成一坨。
+     * <p>分节空行不再自动牺牲：共享列里「上一个服」和「下一个列头」之间
+     * 一定隔一格（服主定的规矩），只有配置 separator=false 才不空。
      */
     private Plan allocate(final List<Sec> secs, final int max, final int cap,
-                          final boolean separatorWanted) {
+                          final boolean separator) {
         if (secs.isEmpty()) {
-            return new Plan(List.of(), 0, separatorWanted, true);
+            return new Plan(List.of(), 0, separator, true);
         }
-        final Plan withSep = tryAllocate(secs, max, cap, separatorWanted);
-        if (!separatorWanted) {
-            return withSep;
-        }
-        // 分节空行是可牺牲的：去掉它能让更多子服独占列（或从「超预算」变成装得下）
-        final Plan without = tryAllocate(secs, max, cap, false);
-        if (withSep.fitted()) {
-            return without.fitted() && without.ownCount() > withSep.ownCount()
-                    ? without
-                    : withSep;
-        }
-        return without.fitted() ? without : withSep;
+        return tryAllocate(secs, max, cap, separator);
     }
 
     /**
@@ -191,38 +175,56 @@ final class LayoutManager {
                 return new Plan(cols, k, separator, true);
             }
         }
-        return new Plan(packShared(secs, cap, separator), 0, separator, false);
+        // 只有一个服时它不算「共享」，照独占续列的规矩均分（不流式挤成 19/19/…/5）
+        final List<Col> fallback = secs.size() == 1
+                ? spill(secs.get(0), need(secs.get(0).count(), perColumn))
+                : packShared(secs, cap, separator);
+        return new Plan(fallback, 0, separator, false);
     }
 
     /**
-     * 把共享的子服按顺序装进若干列，每列高度 ≤ cap。
-     * 某个服自己就超过一列容量时，它先自己续列（别把一列撑爆）。
+     * 把共享的子服按顺序<b>流式</b>装进若干列，每列高度 ≤ cap：
+     * <ul>
+     *   <li>同一列里，下一个服的列头和上一个服之间空一格（separator 开时）；</li>
+     *   <li>空完这一格后剩不到 2 行（列头会落在行末、底下放不了人）→ 换新列，
+     *       新列顶上直接是列头，不再空格；</li>
+     *   <li>一个服在当前列放不完就接着续到下一列，续的那段重复列头（文字不变）。</li>
+     * </ul>
      */
     private List<Col> packShared(final List<Sec> shared, final int cap, final boolean separator) {
-        final int perColumn = Math.max(1, cap - 1);
-        final List<Col> cols = new ArrayList<>();
+        final List<List<Part>> raw = new ArrayList<>();
+        final Map<Sec, Integer> partsOf = new HashMap<>();
         List<Part> cur = new ArrayList<>();
+        int used = 0;
         for (final Sec s : shared) {
-            if (s.count() > perColumn) {
-                if (!cur.isEmpty()) {
-                    cols.add(new Col(List.copyOf(cur)));
+            int at = 0;
+            while (at < s.count()) {
+                int gap = !cur.isEmpty() && separator ? 1 : 0;
+                // 列头 + 至少 1 个人要 2 行；不够 = 列头会落在行末，开新列
+                if (cap - used - gap < 2 && !cur.isEmpty()) {
+                    raw.add(cur);
                     cur = new ArrayList<>();
+                    used = 0;
+                    gap = 0;
                 }
-                cols.addAll(spill(s, need(s.count(), perColumn)));
-                continue;
-            }
-            final List<Part> next = new ArrayList<>(cur);
-            next.add(new Part(s, 0, s.count(), 1, 1));
-            if (!cur.isEmpty() && new Col(next).height(separator) > cap) {
-                cols.add(new Col(List.copyOf(cur)));
-                cur = new ArrayList<>();
-                cur.add(new Part(s, 0, s.count(), 1, 1));
-            } else {
-                cur = next;
+                final int take = Math.min(Math.max(1, cap - used - gap - 1), s.count() - at);
+                final int no = partsOf.merge(s, 1, Integer::sum);
+                cur.add(new Part(s, at, at + take, no, 0));
+                used += gap + 1 + take;
+                at += take;
             }
         }
         if (!cur.isEmpty()) {
-            cols.add(new Col(List.copyOf(cur)));
+            raw.add(cur);
+        }
+        // 第二趟补上每个服一共分了几段（part/parts 给 /vts layout 看）
+        final List<Col> cols = new ArrayList<>(raw.size());
+        for (final List<Part> ps : raw) {
+            final List<Part> fixed = new ArrayList<>(ps.size());
+            for (final Part p : ps) {
+                fixed.add(new Part(p.sec(), p.from(), p.to(), p.part(), partsOf.get(p.sec())));
+            }
+            cols.add(new Col(List.copyOf(fixed)));
         }
         return cols;
     }

@@ -10,7 +10,6 @@ import java.nio.file.StandardCopyOption;
 import java.util.LinkedHashMap;
 import java.util.Locale;
 import java.util.Map;
-import java.util.Set;
 import java.util.TreeMap;
 
 /**
@@ -184,16 +183,6 @@ public final class Configuration {
     /** 子服显示名（键已转小写）；没配的用服名原文。 */
     public String serverDisplayName(final String server) {
         return serverNames.getOrDefault(server, server);
-    }
-
-    /**
-     * [servers.names] 里列出的服名（已转小写，按名字升序）。
-     *
-     * <p>v3 没有 order 了，这份清单只决定「哪些服就算 0 人也要占个分节」
-     * （让网格在空服时也稳定）；列的左右顺序一律按人数降序算。
-     */
-    public Set<String> knownServers() {
-        return serverNames.keySet();
     }
 
     public boolean sameServerByJoin() {
