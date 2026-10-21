@@ -64,6 +64,17 @@ final class DemoSim {
         return n;
     }
 
+    /** 虚拟玩家按服统计（header 的 %server-online% 用）。 */
+    synchronized Map<String, Integer> countsByServer() {
+        final Map<String, Integer> out = new LinkedHashMap<>();
+        for (final Map.Entry<String, List<VUser>> e : byServer.entrySet()) {
+            if (!e.getValue().isEmpty()) {
+                out.put(e.getKey(), e.getValue().size());
+            }
+        }
+        return out;
+    }
+
     /** 深拷贝快照：LayoutManager.build 的输入。 */
     synchronized Map<String, List<TabUser>> snapshot() {
         final Map<String, List<TabUser>> out = new LinkedHashMap<>();

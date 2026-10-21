@@ -66,6 +66,7 @@ public final class VTabSort {
     private final SkinCache skins;
     private final LayoutManager layoutManager;
     private final FlatManager flatManager;
+    private final HeaderFooter headerFooter;
 
     private volatile Configuration config;
     /** 上一次读到的 config.toml 修改时间，热重载用。 */
@@ -92,6 +93,7 @@ public final class VTabSort {
         this.skins = new SkinCache(logger, dataDirectory); // 读磁盘缓存，起服就有皮肤
         this.layoutManager = new LayoutManager(proxy, sorter, skins);
         this.flatManager = new FlatManager(proxy, sorter);
+        this.headerFooter = new HeaderFooter(proxy);
         this.config = Configuration.defaults();
     }
 
@@ -125,6 +127,7 @@ public final class VTabSort {
     @Subscribe
     public void onDisconnect(final DisconnectEvent event) {
         sorter.forget(event.getPlayer().getUniqueId());
+        headerFooter.forget(event.getPlayer().getUniqueId()); // 缓存的渲染结果跟着收走
         refreshAllSoon();
     }
 
@@ -165,6 +168,9 @@ public final class VTabSort {
         } else {
             flatManager.applyAll(cfg);
         }
+        // header/footer 与展示模式无关：每轮都刷（%ping%/%online%/%server% 会变），
+        // 内部全 diff —— 渲染结果没变就不发包。
+        headerFooter.applyAll(cfg, demo.virtualCount(), demo.countsByServer());
     }
 
     // ------------------------------------------------------------------

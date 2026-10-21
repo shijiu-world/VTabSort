@@ -11,7 +11,8 @@
 - 假条目：UUID = nameUUIDFromBytes("vtabsort-slot-N")，name = "vts_sNNN"；显示名空白槽用 `Component.empty()`；残留清理扫描半径 FAKE_RANGE=512（网格缩短后）。`setListed(false)` 现在只藏连接中（还没进服）的玩家——不藏会把折行挤歪；v3 没有截断了所以没有「被藏的溢出玩家」。
 - 三层兜底：事件直刷 → refresh-delay-ms(200) 延迟补发（TAB 建条目竞态）→ reassert-seconds(3) 周期校准（Paper 重置 listOrder=0、TAB 覆写显示名）。全 diff 应用，无变化零发包。
 - 模式切换清场：flat→layout 先 `resetDisplayNames()`（清前缀）；layout→flat 先 `stripAll()`（拔假条目）。flat 模式显示名归本插件管，layout 模式不碰显示名（归 TAB）。
-- 颜色：自带 30 行 Colors 解析器（& 代码 + &#hex）。🔴 不能复用 Vmessage 的 ChatColors——插件 ClassLoader 隔离（铁律 2）。
+- 颜色：自带 Colors 解析器（`&` 码 + `&#hex` + **渐变 `<#RRGGBB>文字</#RRGGBB>`**（v3.2，起止色逐字线性插值，段内仍认 `&l/&m` 等样式码；段内颜色码无效会被插值覆盖））。🔴 **`&#RRGGBB` 只换颜色不清样式**（原版 `§x` 同理）——否则 TAB 那套 `&l&#ffadbb欢&#f3b0c2迎…` 的加粗会被 hex 吃掉；只有命名颜色码 `&0-&f` 才清样式。不认识的 `%xxx%`、没闭合的 `<#` 原样输出，配错不炸。🔴 不能复用 Vmessage 的 ChatColors——插件 ClassLoader 隔离（铁律 2）。
+- **header/footer（v3.2 起，接手 TAB 卸载后的活）**：`[header-footer]` = `enabled` + `header`/`footer` 两个数组（TomlLite 已支持单行/跨行数组）。`HeaderFooter` 每轮（事件直刷 + 200ms 补发 + reassert 3s）按 viewer 渲染：占位符替换 → `Colors.parse`（多行用 `Component.newline()` 拼）→ diff（渲染字符串没变不发包）→ `sendPlayerListHeaderAndFooter`。🔴 关掉时**只清一次**（发空组件），否则会跟别的 header 插件互相擦。占位符 `%online%`（含 demo 虚拟玩家）`%server%`（显示名）`%server-raw%` `%server-online%` `%player%` `%ping%` `%time%` `%date%`；认不出的原样留着（配错能看见）。
 - 命令 `/vtabsort`（别名 `/vts`）reload/layout/version；`layout` 子命令打印当前分列模型（含 auto 的落地判定、续列第几段、超列预算/去空行提示）。权限 `vtabsort.reload`。主名小写注册。
 - ⚠️ 别用 PlugManX 热卸载（假条目会永久残留玩家 Tab），重启代理换 jar。
 - 构建：Git Bash `JAVA_HOME=D:/Code/Java/zulu25.34.17-ca-jdk25.0.3-win_x64 mvn -B -o package`（velocity-api 4.3.0 已进本地 m2）。发版改 pom 版本一处（BuildConstants templating）。Java 输出 GBK：`> log && iconv -f GBK -t UTF-8` 看错误。

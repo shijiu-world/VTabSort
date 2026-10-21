@@ -80,6 +80,10 @@ public final class Configuration {
     private final int autoReloadIntervalSeconds;
     private final int refreshDelayMs;
     private final int reassertSeconds;
+    /** header/footer 总开关（false = 清掉已显示的、本插件不再插手）。 */
+    private final boolean headerFooterEnabled;
+    private final List<String> headerLines;
+    private final List<String> footerLines;
 
     private Configuration(final Mode mode, final int maxColumns, final int rows,
                           final String headerFormat, final boolean separator,
@@ -90,7 +94,9 @@ public final class Configuration {
                           final boolean sameServerByJoin,
                           final Map<String, String> messages,
                           final boolean autoReload, final int autoReloadIntervalSeconds,
-                          final int refreshDelayMs, final int reassertSeconds) {
+                          final int refreshDelayMs, final int reassertSeconds,
+                          final boolean headerFooterEnabled,
+                          final List<String> headerLines, final List<String> footerLines) {
         this.mode = mode;
         this.maxColumns = maxColumns;
         this.rows = rows;
@@ -108,6 +114,9 @@ public final class Configuration {
         this.autoReloadIntervalSeconds = autoReloadIntervalSeconds;
         this.refreshDelayMs = refreshDelayMs;
         this.reassertSeconds = reassertSeconds;
+        this.headerFooterEnabled = headerFooterEnabled;
+        this.headerLines = headerLines;
+        this.footerLines = footerLines;
     }
 
     public static Configuration defaults() {
@@ -130,7 +139,10 @@ public final class Configuration {
                 0, "", "",
                 "&7[&e#name#&7] ", true,
                 names, false, messages,
-                false, 3, 200, 3);
+                false, 3, 200, 3,
+                true,
+                List.of("&e欢迎来到 &6拾玖世界", "&7在线 &f%online% &7人 · 当前 &f%server%"),
+                List.of("&7延迟 &#9adbc5%ping% &7ms"));
     }
 
     /** 配置里写的模式（可能是 auto）。 */
@@ -230,6 +242,21 @@ public final class Configuration {
         return reassertSeconds;
     }
 
+    /** header/footer 总开关。 */
+    public boolean headerFooterEnabled() {
+        return headerFooterEnabled;
+    }
+
+    /** header 行（原文，占位符还没替换）。 */
+    public List<String> headerLines() {
+        return headerLines;
+    }
+
+    /** footer 行（原文，占位符还没替换）。 */
+    public List<String> footerLines() {
+        return footerLines;
+    }
+
     // ------------------------------------------------------------------
     // 加载
     // ------------------------------------------------------------------
@@ -304,10 +331,19 @@ public final class Configuration {
         final int delay = (int) clamp(TomlLite.integer(raw, "advanced.refresh-delay-ms", 200), 0, 10_000);
         final int reassert = (int) clamp(TomlLite.integer(raw, "advanced.reassert-seconds", 3), 0, 60);
 
+        // header/footer：TAB 卸载后的接手方案。行内支持 & 码 / &#hex /
+        // <#hex>渐变</#hex>；占位符见 HeaderFooter.variables()。
+        final boolean hfEnabled = TomlLite.bool(raw, "header-footer.enabled", true);
+        final List<String> header = TomlLite.list(raw, "header-footer.header",
+                defaults().headerLines());
+        final List<String> footer = TomlLite.list(raw, "header-footer.footer",
+                defaults().footerLines());
+
         return new Configuration(mode, maxColumns, rows, headerFormat, separator,
                 blankPing, skinSpec, skinSig, flatPrefix, flatSort,
                 names, byJoin, messages,
-                autoReload, interval, delay, reassert);
+                autoReload, interval, delay, reassert,
+                hfEnabled, header, footer);
     }
 
     private static long clamp(final long v, final long min, final long max) {
