@@ -141,17 +141,21 @@ final class LayoutManager {
         final int rMin = (cap * (c - 1) + 1 + c - 1) / c;
         final int r = Math.max(Math.max(natural, rMin), 1);
 
-        // 5) 填槽（列主序，槽位号 = 全局序号，与客户端折行一致）
+        // 5) 填槽（列主序，槽位号 = 建模顺序，即期望的显示顺序）
+        //    🔴 客户端对 listOrder 是**降序**排（官方 1.21.2 changelog：
+        //    "sorted highest to lowest"，值越大越靠前）——所以条目的顺序值
+        //    一律取镜像：order = 总槽数-1-槽位号。demo 实测镜像过一次才定案。
         final List<LayoutModel.Slot> slots = new ArrayList<>();
         final Map<UUID, Integer> orders = new HashMap<>();
         final List<LayoutModel.ColumnDesc> colDescs = new ArrayList<>();
         for (final Col col : cols) {
             fillColumn(col, r, plan.separator(), cfg, slots, colDescs);
         }
-        for (int i = 0; i < slots.size(); i++) {
+        final int total = slots.size();
+        for (int i = 0; i < total; i++) {
             final UUID u = slots.get(i).player;
             if (u != null) {
-                orders.put(u, i);
+                orders.put(u, total - 1 - i);
             }
         }
 
@@ -342,8 +346,12 @@ final class LayoutManager {
     void applyViewer(final Player viewer, final LayoutModel model, final Configuration cfg,
                      final int cleanTo) {
         final TabList tabList = viewer.getTabList();
+        // 🔴 客户端 listOrder 降序（值越大越靠前）：显示顺序 = 建模顺序，
+        //    顺序值 = 总槽数-1-槽位号（见 build 第 5 步）。
+        final int total = model.slots.size();
         // 1) 网格槽位
-        for (int i = 0; i < model.slots.size(); i++) {
+        for (int i = 0; i < total; i++) {
+            final int order = total - 1 - i;
             final LayoutModel.Slot slot = model.slots.get(i);
             final UUID fakeId = fakeUuid(i);
             if (slot.player != null) {
@@ -353,7 +361,7 @@ final class LayoutManager {
                     if (tabList.containsEntry(fakeId)) {
                         tabList.removeEntry(fakeId);
                     }
-                    applySlotState(entry, i);
+                    applySlotState(entry, order);
                 } else {
                     // 🔴 真条目还没被 TAB 建出来（事件竞态常见）：拿一个同名假条目
                     //    临时占位。不放这一格的话总条目就少 1，客户端折行重算 →
@@ -362,24 +370,24 @@ final class LayoutManager {
                             Component.text(slot.name == null ? "" : slot.name);
                     final TabListEntry stand = tabList.getEntry(fakeId).orElse(null);
                     if (stand == null) {
-                        addFake(tabList, i, placeholder, cfg);
+                        addFake(tabList, i, order, placeholder, cfg);
                     } else {
                         if (!Objects.equals(stand.getDisplayNameComponent().orElse(null),
                                 placeholder)) {
                             setDisplay(stand, placeholder);
                         }
-                        applySlotState(stand, i);
+                        applySlotState(stand, order);
                     }
                 }
             } else {
                 final TabListEntry entry = tabList.getEntry(fakeId).orElse(null);
                 if (entry == null) {
-                    addFake(tabList, i, slot.display, cfg);
+                    addFake(tabList, i, order, slot.display, cfg);
                 } else {
                     if (!Objects.equals(entry.getDisplayNameComponent().orElse(null), slot.display)) {
                         setDisplay(entry, slot.display);
                     }
-                    applySlotState(entry, i);
+                    applySlotState(entry, order);
                 }
             }
         }
@@ -409,8 +417,8 @@ final class LayoutManager {
         }
     }
 
-    private void addFake(final TabList tabList, final int slot, final Component display,
-                         final Configuration cfg) {
+    private void addFake(final TabList tabList, final int slot, final int order,
+                         final Component display, final Configuration cfg) {
         try {
             final TabListEntry entry = TabListEntry.builder()
                     .tabList(tabList)
@@ -419,7 +427,7 @@ final class LayoutManager {
                     .latency(cfg.blankPing())
                     .gameMode(0)
                     .listed(true)
-                    .listOrder(slot)
+                    .listOrder(order)
                     .build();
             tabList.addEntry(entry);
         } catch (final Exception ignored) {

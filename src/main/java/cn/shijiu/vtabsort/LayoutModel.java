@@ -72,9 +72,13 @@ final class LayoutModel {
         }
     }
 
-    /** 列主序的槽位表：槽位号 = 客户端折行后的全局序号。 */
+    /**
+     * 列主序的槽位表：下标 = 建模顺序 = 期望的显示顺序（列头 → 玩家 → 填充）。
+     * 🔴 下标不是协议里的 listOrder——客户端对 listOrder 降序排（值越大越靠前），
+     * 发包时的顺序值一律取「总槽数-1-下标」镜像（见 LayoutManager.build 第 5 步）。
+     */
     final List<Slot> slots;
-    /** 可见玩家的目标 listOrder（= 槽位号）。 */
+    /** 可见玩家的目标 listOrder（已做降序镜像 = 总槽数-1-槽位下标）。 */
     final Map<UUID, Integer> orders;
     /** 需要隐藏（listed=false）的玩家：还没进任何服的（连接中）。 */
     final Set<UUID> hidden;

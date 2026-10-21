@@ -2,6 +2,7 @@
 
 - 定位：Velocity 端 Tab 展示三模式插件。layout = Hypixel 式固定网格（列头子服名 + 假条目补满 + 人数降序分列 + 续列 + 自适应行数）；flat = 前缀列表 + 可选排序；auto = 在线 ≤ rows 走 flat、超过走 layout。底层仍是 1.21.2+ `listOrder` 协议字段，不碰 scoreboard team。
 - 🔴 依赖必须 velocity-api **4.x**（`setListOrder` 3.4.0 才有；VWhisper/Vmessage 用的 3.2.0 没有）。编译 release **25**。假条目用 `TabListEntry.builder().tabList(...).profile(...).displayName(...).latency(...).gameMode(0).listed(true).listOrder(...)` + `TabList#addEntry/removeEntry/containsEntry/getEntry`。
+- 🔴 **listOrder 是降序**（官方 1.21.2 changelog："a non-negative ordering index that is sorted **highest to lowest**"——值越大越靠前，demo 实测 2026-10-21 镜像翻车定案）。建模槽位下标（0 = 期望显示在最前）≠ 协议顺序值：发包一律取 `总槽数-1-下标` 镜像（LayoutManager.build 第 5 步 / applyViewer / addFake）；flat 的 Sorter.computeOrders 同理——人多的服基数最大、组内 idx 越小值越大（`RANK_CAP-idx`）。没进 orders 表的条目默认 0 = 沉底。
 - 🔴 **客户端折行算法（1.19.3+ 实测 2026-10-18）**：列数 = ceil(总条目 ÷ 行数上限 20)，行数 = ceil(总条目 ÷ 列数)，是**平衡列**不是固定 20 填充（27 人 → 2 列×14 行）。推论：网格总条目必须精确 = 列数×行数；行数自适应取 max(内容高度, ceil((rows×(C-1)+1)/C))，上限 rows。4 列最少 16 行。
 - 🔴 **v3 分列规则**（删了 [servers].order/unknown、[layout].truncate/overflow-format）：①列的左右顺序 = 子服人数降序（平手服名升序）；②一个服 > rows-1 人就续开列，按列均分、余数给靠前的列，续列列头文字完全一样（#count# 恒为总人数）；③列预算不够时尾部开共享列（可占多列，packShared **流式**装箱：同列分节间固定空一格；空完剩 <2 行＝列头会落行末 → 换新列、新列顶不空格；一个服放不完续到下一列并重复列头）；④**保行数、让列数溢出** —— 行数是客户端硬约束，max-columns 只是期望值；⑤**0 人子服整个不出现**（[servers.names] 只管显示名）。
 - 分配算法 = 「试 k 退 k」：k = 独占列的服个数，从 secs.size() 往 0 退，第一个 cols.size() ≤ max 的方案胜出（tryAllocate）。🔴 分节空行**不再自动牺牲**（服主要求共享列列头必须和上个服隔一格），只有 separator=false 才不空。
