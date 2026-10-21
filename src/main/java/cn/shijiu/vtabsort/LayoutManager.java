@@ -20,6 +20,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * layout 模式引擎：把所有子服的玩家排进固定网格（列头 = 子服名，假人补满）。
@@ -62,6 +63,19 @@ final class LayoutManager {
      * 保证网格缩小时不留尾巴；初值取 FAKE_RANGE，顺便覆盖上任实例的可能残留。
      */
     private volatile int lastSlotCount = FAKE_RANGE;
+    /**
+     * 我们替真人补建的条目（真 UUID + 真人 profile）。
+     *
+     * <p>🔴 没有 TAB 时，客户端的 Tab 列表里**只有同一个后端服的玩家**
+     * （Velocity 不合成全局列表，条目是后端发的）。其它子服的真人没有条目 →
+     * 网格缺一格 → 整列错位（v3.0.1 的老问题）。以前补的是"占位皮肤的假条目"，
+     * 于是别人看他就变成占位皮肤了；现在改成**用他自己的 GameProfile 补**
+     * —— 真 UUID + 真皮肤，客户端看到的和真人一模一样，而且以后端/代理
+     * 真把它建出来时是同一个 UUID，不会变成两条。
+     *
+     * <p>这个 set 只用来在玩家下线时收尾（见 {@link #forget}）。
+     */
+    private final Set<UUID> standins = ConcurrentHashMap.newKeySet();
 
     LayoutManager(final ProxyServer proxy, final Sorter sorter, final SkinCache skins) {
         this.proxy = proxy;
@@ -357,26 +371,21 @@ final class LayoutManager {
             if (slot.player != null) {
                 final TabListEntry entry = tabList.getEntry(slot.player).orElse(null);
                 if (entry != null) {
-                    // 真条目在：占着这格的临时假条目让位
-                    if (tabList.containsEntry(fakeId)) {
-                        tabList.removeEntry(fakeId);
-                    }
+                    // 真条目在：它自己（或我们补的那条）占着这格，补位记录清掉
+                    standins.remove(slot.player);
+                    removeFake(tabList, fakeId); // 老版本可能在这格留了占位假条目
                     applySlotState(entry, order);
                 } else {
-                    // 🔴 真条目还没被 TAB 建出来（事件竞态常见）：拿一个同名假条目
-                    //    临时占位。不放这一格的话总条目就少 1，客户端折行重算 →
-                    //    **整列错位**。真条目一出现，下一轮走上面分支把它拔掉。
-                    final Component placeholder =
-                            Component.text(slot.name == null ? "" : slot.name);
-                    final TabListEntry stand = tabList.getEntry(fakeId).orElse(null);
-                    if (stand == null) {
+                    removeFake(tabList, fakeId);
+                    // 🔴 真条目还没建出来（其它子服的玩家 / 事件竞态）：
+                    //    优先用**他自己的 profile**（真 UUID + 真皮肤）补一条，
+                    //    客户端看到的就是本人；实在拿不到（人刚好下线）才退化成
+                    //    同名假条目占位 —— 那格不补的话总条目少 1，客户端折行
+                    //    重算会把整列挤歪。
+                    if (!addStandIn(viewer, tabList, slot.player, slot.name, order)) {
+                        final Component placeholder =
+                                Component.text(slot.name == null ? "" : slot.name);
                         addFake(tabList, i, order, placeholder, cfg);
-                    } else {
-                        if (!Objects.equals(stand.getDisplayNameComponent().orElse(null),
-                                placeholder)) {
-                            setDisplay(stand, placeholder);
-                        }
-                        applySlotState(stand, order);
                     }
                 }
             } else {
@@ -407,6 +416,16 @@ final class LayoutManager {
         }
     }
 
+    /** 拔掉某一格上可能残留的占位假条目（换用真人 profile 之后要清）。 */
+    private static void removeFake(final TabList tabList, final UUID fakeId) {
+        if (tabList.containsEntry(fakeId)) {
+            try {
+                tabList.removeEntry(fakeId);
+            } catch (final Exception ignored) {
+            }
+        }
+    }
+
     /** 槽位的公共状态：顺序 + 可见。全 diff，没变化一个包都不发。 */
     private static void applySlotState(final TabListEntry entry, final int order) {
         if (entry.getListOrder() != order) {
@@ -414,6 +433,63 @@ final class LayoutManager {
         }
         if (!entry.isListed()) {
             setListed(entry, true);
+        }
+    }
+
+    /**
+     * 用真人自己的 profile 补一条 Tab 条目（真 UUID + 真皮肤）。
+     *
+     * <p>🔴 为什么必须这么做：没装 TAB 时，客户端的 Tab 里只有「同一个后端服」
+     * 的玩家（Velocity 不合成全局列表，条目都是后端发的）。其它子服的真人
+     * 没有条目 → 网格缺一格 → 客户端折行重算 → 整列错位。以前补的是"占位皮肤
+     * 的同名假条目"，结果别人看他全变成占位皮肤了。用真人 profile 补：
+     * ①皮肤就是他自己的；②UUID 也是真的，后端/代理之后真把条目建出来时是
+     * 同一个 UUID，不会变成两条重名。
+     *
+     * @return 补成功了没（false = 人已经不在了，调用方退化成假条目占位）
+     */
+    private boolean addStandIn(final Player viewer, final TabList tabList, final UUID uuid,
+                               final String name, final int order) {
+        final Player target = proxy.getPlayer(uuid).orElse(null);
+        if (target == null) {
+            return false; // 人刚好下线：下一轮网格自己会收掉这格
+        }
+        try {
+            final TabListEntry entry = TabListEntry.builder()
+                    .tabList(tabList)
+                    .profile(target.getGameProfile())
+                    .displayName(Component.text(name == null ? target.getUsername() : name))
+                    .latency((int) Math.round(target.getPing()))
+                    .gameMode(0)
+                    .listed(true)
+                    .listOrder(order)
+                    .build();
+            tabList.addEntry(entry);
+            standins.add(uuid);
+            return true;
+        } catch (final Exception ignored) {
+            return false; // 单个 viewer 出问题不影响别人
+        }
+    }
+
+    /**
+     * 玩家下线：把我们替他补的条目收掉。
+     *
+     * <p>🔴 只收「我们补的」：用真 UUID 建的条目，一旦后端自己建出来了就是
+     * 同一个条目，那时 {@code standins} 里已经没有它了，不会被误删。
+     */
+    void forget(final UUID uuid) {
+        if (!standins.remove(uuid)) {
+            return;
+        }
+        for (final Player viewer : proxy.getAllPlayers()) {
+            final TabList tabList = viewer.getTabList();
+            if (tabList.containsEntry(uuid)) {
+                try {
+                    tabList.removeEntry(uuid);
+                } catch (final Exception ignored) {
+                }
+            }
         }
     }
 
@@ -451,6 +527,10 @@ final class LayoutManager {
      * 格式打回裸名（flat 前缀的残留由模式切换逻辑 / TAB 自己的事件愈合）。
      */
     void resetAll() {
+        // 先把上任替真人补的条目收掉（UUID 是真人的，重开会按新配置再补一次）
+        for (final UUID u : new ArrayList<>(standins)) {
+            forget(u);
+        }
         for (final Player viewer : proxy.getAllPlayers()) {
             stripViewerFakes(viewer);
             for (final Player p : proxy.getAllPlayers()) {

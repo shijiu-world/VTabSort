@@ -128,6 +128,7 @@ public final class VTabSort {
     public void onDisconnect(final DisconnectEvent event) {
         sorter.forget(event.getPlayer().getUniqueId());
         headerFooter.forget(event.getPlayer().getUniqueId()); // 缓存的渲染结果跟着收走
+        layoutManager.forget(event.getPlayer().getUniqueId()); // 替他补的 Tab 条目
         refreshAllSoon();
     }
 
