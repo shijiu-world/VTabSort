@@ -56,6 +56,11 @@ final class LayoutManager {
 
     private final ProxyServer proxy;
     private final Sorter sorter;
+    /**
+     * 上一轮实际用掉的槽位数。清理残留假条目时按「本轮和上一轮的较大值」扫，
+     * 保证网格缩小时不留尾巴；初值取 FAKE_RANGE，顺便覆盖上任实例的可能残留。
+     */
+    private volatile int lastSlotCount = FAKE_RANGE;
 
     LayoutManager(final ProxyServer proxy, final Sorter sorter) {
         this.proxy = proxy;
@@ -88,16 +93,25 @@ final class LayoutManager {
                     .add(new TabUser(p.getUniqueId(), p.getUsername(), sorter.joinSeqOf(p.getUniqueId())));
         }
         // 1.5) demo 虚拟玩家注入（uuid=null，渲染走假条目路径）
+        //      0 人的服整段跳过 —— 否则会多出一个空列头，和「0 人服不出现」的规矩冲突
         if (demo != null) {
             for (final Map.Entry<String, List<TabUser>> e : demo.entrySet()) {
+                if (e.getValue().isEmpty()) {
+                    continue;
+                }
                 byServer.computeIfAbsent(e.getKey(), k -> new ArrayList<>()).addAll(e.getValue());
             }
         }
 
         // 2) 子服清单：**只要有人在线的**。0 人的子服整个不出现（连列头都没有），
         //    所以也不会有空列 —— 网格会随着人走空而收缩，这是服主定的规矩。
-        //    [servers.names] 此时只负责提供显示名，不再决定谁占分节。
-        final List<String> servers = new ArrayList<>(byServer.keySet());
+        //    [servers.names] 此时只负责提供显示名 + demo 的玩家池，不再决定谁占分节。
+        final List<String> servers = new ArrayList<>();
+        for (final Map.Entry<String, List<TabUser>> e : byServer.entrySet()) {
+            if (!e.getValue().isEmpty()) {
+                servers.add(e.getKey());
+            }
+        }
         Collections.sort(servers); // 先按服名排，给下面的人数平手兜一个稳定序
 
         final Comparator<TabUser> pc = sorter.tabUserComparator(cfg);
@@ -160,7 +174,7 @@ final class LayoutManager {
     private Plan allocate(final List<Sec> secs, final int max, final int cap,
                           final boolean separator) {
         if (secs.isEmpty()) {
-            return new Plan(List.of(), 0, separator, true);
+            return new Plan(List.of(), separator, true);
         }
         return tryAllocate(secs, max, cap, separator);
     }
@@ -177,6 +191,7 @@ final class LayoutManager {
     private Plan tryAllocate(final List<Sec> secs, final int max, final int cap,
                              final boolean separator) {
         final int perColumn = Math.max(1, cap - 1); // 一列能放的玩家数（扣掉列头）
+        List<Col> allShared = null; // k=0 那趟的结果，兜底直接复用（省一次重算）
         for (int k = secs.size(); k >= 0; k--) {
             final List<Col> cols = new ArrayList<>();
             for (final Sec s : secs.subList(0, k)) {
@@ -184,17 +199,21 @@ final class LayoutManager {
             }
             final List<Sec> tail = secs.subList(k, secs.size());
             if (!tail.isEmpty()) {
-                cols.addAll(packShared(tail, cap, separator));
+                final List<Col> shared = packShared(tail, cap, separator);
+                if (k == 0) {
+                    allShared = shared;
+                }
+                cols.addAll(shared);
             }
             if (cols.size() <= max) {
-                return new Plan(cols, k, separator, true);
+                return new Plan(cols, separator, true);
             }
         }
         // 只有一个服时它不算「共享」，照独占续列的规矩均分（不流式挤成 19/19/…/5）
         final List<Col> fallback = secs.size() == 1
                 ? spill(secs.get(0), need(secs.get(0).count(), perColumn))
-                : packShared(secs, cap, separator);
-        return new Plan(fallback, 0, separator, false);
+                : allShared;
+        return new Plan(fallback, separator, false);
     }
 
     /**
@@ -276,28 +295,28 @@ final class LayoutManager {
             // 列头：#count# 恒为该子服总人数（续列的列头也一样，"列名不变"）
             slots.add(new LayoutModel.Slot(null, textComponent(cfg.headerFormat()
                     .replace("#name#", sec.display)
-                    .replace("#count#", String.valueOf(sec.count())))));
+                    .replace("#count#", String.valueOf(sec.count()))), null));
             placed++;
             for (int k = part.from(); k < part.to(); k++) {
                 final TabUser u = sec.players.get(k);
                 if (u.virtual()) {
                     // demo 虚拟玩家：走假条目路径，显示名 = 名字（和真人观感一致）
-                    slots.add(new LayoutModel.Slot(null, Component.text(u.name())));
+                    slots.add(new LayoutModel.Slot(null, Component.text(u.name()), u.name()));
                 } else {
-                    slots.add(new LayoutModel.Slot(u.uuid(), null));
+                    slots.add(new LayoutModel.Slot(u.uuid(), null, u.name()));
                 }
                 placed++;
             }
             sds.add(new LayoutModel.SectionDesc(sec.server, sec.display, sec.count(),
                     part.to() - part.from(), part.part(), part.parts()));
             if (i < col.parts().size() - 1 && separator) {
-                slots.add(new LayoutModel.Slot(null, Component.empty()));
+                slots.add(new LayoutModel.Slot(null, Component.empty(), null));
                 placed++;
             }
         }
         // 假人补满到整列高度（placed > rows 只会发生在共享列溢出，那时不补）
         for (int i = placed; i < rows; i++) {
-            slots.add(new LayoutModel.Slot(null, Component.empty()));
+            slots.add(new LayoutModel.Slot(null, Component.empty(), null));
         }
         colDescs.add(new LayoutModel.ColumnDesc(sds));
     }
@@ -307,29 +326,47 @@ final class LayoutManager {
     // ------------------------------------------------------------------
 
     void applyAll(final LayoutModel model, final Configuration cfg) {
+        // 清理上界取「本轮和上一轮槽位数」的较大值：网格缩短（人变少 / 配置改小）
+        // 后，超出当前网格的旧假条目要按这个半径清掉。
+        // 🔴 不能写死常数：demo 塞几百个虚拟玩家、或把 rows 调小时，槽位数能到
+        // 几千，写死就清不干净（旧假条目永远杵在 Tab 里）。
+        final int cleanTo = Math.max(model.slots.size(), lastSlotCount);
         for (final Player viewer : proxy.getAllPlayers()) {
-            applyViewer(viewer, model, cfg);
+            applyViewer(viewer, model, cfg, cleanTo);
         }
+        lastSlotCount = model.slots.size();
     }
 
-    void applyViewer(final Player viewer, final LayoutModel model, final Configuration cfg) {
+    void applyViewer(final Player viewer, final LayoutModel model, final Configuration cfg,
+                     final int cleanTo) {
         final TabList tabList = viewer.getTabList();
         // 1) 网格槽位
         for (int i = 0; i < model.slots.size(); i++) {
             final LayoutModel.Slot slot = model.slots.get(i);
             final UUID fakeId = fakeUuid(i);
             if (slot.player != null) {
-                // 该槽是真实玩家：之前占着这格的假条目要拔掉
-                if (tabList.containsEntry(fakeId)) {
-                    tabList.removeEntry(fakeId);
-                }
                 final TabListEntry entry = tabList.getEntry(slot.player).orElse(null);
                 if (entry != null) {
-                    if (entry.getListOrder() != i) {
-                        setOrder(entry, i);
+                    // 真条目在：占着这格的临时假条目让位
+                    if (tabList.containsEntry(fakeId)) {
+                        tabList.removeEntry(fakeId);
                     }
-                    if (!entry.isListed()) {
-                        setListed(entry, true);
+                    applySlotState(entry, i);
+                } else {
+                    // 🔴 真条目还没被 TAB 建出来（事件竞态常见）：拿一个同名假条目
+                    //    临时占位。不放这一格的话总条目就少 1，客户端折行重算 →
+                    //    **整列错位**。真条目一出现，下一轮走上面分支把它拔掉。
+                    final Component placeholder =
+                            Component.text(slot.name == null ? "" : slot.name);
+                    final TabListEntry stand = tabList.getEntry(fakeId).orElse(null);
+                    if (stand == null) {
+                        addFake(tabList, i, placeholder, cfg);
+                    } else {
+                        if (!Objects.equals(stand.getDisplayNameComponent().orElse(null),
+                                placeholder)) {
+                            setDisplay(stand, placeholder);
+                        }
+                        applySlotState(stand, i);
                     }
                 }
             } else {
@@ -340,17 +377,12 @@ final class LayoutManager {
                     if (!Objects.equals(entry.getDisplayNameComponent().orElse(null), slot.display)) {
                         setDisplay(entry, slot.display);
                     }
-                    if (entry.getListOrder() != i) {
-                        setOrder(entry, i);
-                    }
-                    if (!entry.isListed()) {
-                        setListed(entry, true);
-                    }
+                    applySlotState(entry, i);
                 }
             }
         }
-        // 2) 网格缩短后的残留假条目（自适应行数变化、配置改小）
-        for (int i = model.slots.size(); i < FAKE_RANGE; i++) {
+        // 2) 网格缩短后的残留假条目（自适应行数变化、配置改小、demo 收摊）
+        for (int i = model.slots.size(); i < cleanTo; i++) {
             final UUID fakeId = fakeUuid(i);
             if (tabList.containsEntry(fakeId)) {
                 tabList.removeEntry(fakeId);
@@ -362,6 +394,16 @@ final class LayoutManager {
             if (entry != null && entry.isListed()) {
                 setListed(entry, false);
             }
+        }
+    }
+
+    /** 槽位的公共状态：顺序 + 可见。全 diff，没变化一个包都不发。 */
+    private static void applySlotState(final TabListEntry entry, final int order) {
+        if (entry.getListOrder() != order) {
+            setOrder(entry, order);
+        }
+        if (!entry.isListed()) {
+            setListed(entry, true);
         }
     }
 
@@ -412,7 +454,8 @@ final class LayoutManager {
 
     private void stripViewerFakes(final Player viewer) {
         final TabList tabList = viewer.getTabList();
-        for (int i = 0; i < FAKE_RANGE; i++) {
+        final int to = Math.max(FAKE_RANGE, lastSlotCount);
+        for (int i = 0; i < to; i++) {
             final UUID fakeId = fakeUuid(i);
             if (tabList.containsEntry(fakeId)) {
                 tabList.removeEntry(fakeId);
@@ -491,12 +534,11 @@ final class LayoutManager {
     /**
      * 一次分配的结果。
      *
-     * @param cols       物理列（左右顺序 = 人数降序，共享列在尾部）
-     * @param ownCount   有几个子服拿到了独占列（k）
-     * @param separator  这一趟实际有没有用分节空行
-     * @param fitted     有没有塞进 max-columns（false = 列数溢出了，行数守住）
+     * @param cols      物理列（左右顺序 = 人数降序，共享列在尾部）
+     * @param separator 这一趟实际有没有用分节空行
+     * @param fitted    有没有塞进 max-columns（false = 列数溢出了，行数守住）
      */
-    private record Plan(List<Col> cols, int ownCount, boolean separator, boolean fitted) {
+    private record Plan(List<Col> cols, boolean separator, boolean fitted) {
     }
 
     /** 一个物理列：一个片段（独占/续列）或多个片段（共享列）。 */

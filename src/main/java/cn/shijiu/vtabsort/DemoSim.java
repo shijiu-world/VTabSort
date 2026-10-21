@@ -55,10 +55,6 @@ final class DemoSim {
         return !byServer.isEmpty();
     }
 
-    synchronized boolean isFlow() {
-        return flow;
-    }
-
     /** 当前虚拟玩家总数（auto 模式的翻面判定也要把它算进去）。 */
     synchronized int virtualCount() {
         int n = 0;
@@ -98,13 +94,17 @@ final class DemoSim {
         flow = false;
     }
 
-    /** 固定模式：各服人数直接指定。 */
+    /** 固定模式：各服人数直接指定。⚠️ 0 人的服整段不放 —— 否则会多出空列头。 */
     synchronized void setFixed(final Map<String, Integer> counts) {
         byServer.clear();
         flow = false;
         for (final Map.Entry<String, Integer> e : counts.entrySet()) {
+            final int want = Math.min(Math.max(0, e.getValue()), PER_SERVER_CAP);
+            if (want == 0) {
+                continue;
+            }
             final List<VUser> l = new ArrayList<>();
-            for (int i = 0; i < Math.min(e.getValue(), PER_SERVER_CAP); i++) {
+            for (int i = 0; i < want; i++) {
                 l.add(spawn(l));
             }
             byServer.put(e.getKey(), l);
@@ -122,6 +122,9 @@ final class DemoSim {
             }
             // 随机分一块（至少留够后面每个服还能拿 0~2 人，摊得开一点）
             final int take = Math.min(remaining, random.nextInt(3) + Math.max(0, remaining / Math.max(1, pool.size() / 2)));
+            if (take == 0) {
+                continue; // 0 人的服不放进去 —— 它的列本来就该不出现
+            }
             final List<VUser> l = new ArrayList<>();
             for (int i = 0; i < take; i++) {
                 l.add(spawn(l));

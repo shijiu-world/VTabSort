@@ -13,16 +13,25 @@ import java.util.UUID;
  */
 final class LayoutModel {
 
-    /** 一个槽位：要么真实玩家，要么假条目文本（含空白填充）。 */
+    /**
+     * 一个槽位：要么真实玩家，要么假条目文本（含空白填充）。
+     *
+     * @param player  真实玩家的 UUID；null = 假条目槽
+     * @param display 假条目的显示名；真实玩家槽为 null（显示名归 TAB 管）
+     * @param name    占这个位子的人名（真实玩家 / demo 虚拟玩家）；纯填充槽为 null。
+     *                🔴 真玩家的 tab 条目由 TAB 创建，事件瞬间可能还没建出来 ——
+     *                那时用同名假条目**临时占位**，否则网格会缺一格、
+     *                客户端折行重算 → 整列错位（见 LayoutManager.applyViewer）。
+     */
     static final class Slot {
-        /** 真实玩家的 UUID；null = 假条目槽。 */
         final UUID player;
-        /** 假条目的显示名；玩家槽为 null。 */
         final Component display;
+        final String name;
 
-        Slot(final UUID player, final Component display) {
+        Slot(final UUID player, final Component display, final String name) {
             this.player = player;
             this.display = display;
+            this.name = name;
         }
     }
 

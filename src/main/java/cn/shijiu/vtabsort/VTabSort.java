@@ -236,7 +236,10 @@ public final class VTabSort {
      * </pre>
      */
     private void handleDemo(final CommandSource source, final String[] args) {
-        if (config.mode() == Configuration.Mode.FLAT) {
+        final String op = args.length >= 2 ? args[1].toLowerCase(Locale.ROOT) : "";
+        // flat 模式下开模拟没意义（网格都看不到），但「off」必须随时能用
+        // —— 否则切到 flat 之后就再也关不掉一个正在跑的流动模拟了。
+        if (config.mode() == Configuration.Mode.FLAT && !"off".equals(op)) {
             send(source, "当前是 flat 模式，网格看不到 —— 先切 layout/auto 再 demo。");
             return;
         }
@@ -245,7 +248,6 @@ public final class VTabSort {
             send(source, "用法：/vts demo off | /vts demo lobby:5 survival:12 | /vts demo flow [总人数]");
             return;
         }
-        final String op = args[1].toLowerCase(Locale.ROOT);
         switch (op) {
             case "off" -> {
                 stopDemoFlow();

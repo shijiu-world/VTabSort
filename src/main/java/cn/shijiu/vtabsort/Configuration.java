@@ -121,7 +121,7 @@ public final class Configuration {
         messages.put("reloaded", "配置已重新加载，Tab 已刷新");
         messages.put("reload-failed", "配置加载失败，用的还是旧配置，原因：#reason#");
         messages.put("no-permission", "你没有权限这么做");
-        messages.put("usage", "用法：/vtabsort reload | layout | version");
+        messages.put("usage", "用法：/vtabsort reload | layout | demo | version");
         return new Configuration(Mode.LAYOUT, 4, 20,
                 "&e#name# &7· #count#", true,
                 0, "",
