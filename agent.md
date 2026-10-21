@@ -9,6 +9,8 @@
 - auto 落地在 `Configuration.effectiveMode(onlineCount)`，阈值 = `[layout].rows`（客户端拆第二列的点）。🔴 翻面清场放在 `VTabSort.rebuildNow` 里比对 `appliedMode`（AtomicReference），**不能**只在 reload 里比配置——auto 下配置没变也会翻面。
 - `docs/index.html` 是纯前端模拟器（单文件、零依赖，GitHub Pages 站点入口 → https://shijiu-world.github.io/VTabSort/，`.github/workflows/pages.yml` 推 main 自动部署），复刻同一套算法；改 LayoutManager 必须同步改它，并用 `/tmp` 下的 Harness（动态代理伪造 Player/ProxyServer 跑真 build）+ node 抽 JS 对跑同场景核对输出一致。
 - 假条目：UUID = nameUUIDFromBytes("vtabsort-slot-N")，name = "vts_sNNN"；显示名空白槽用 `Component.empty()`；残留清理扫描半径 FAKE_RANGE=512（网格缩短后）。`setListed(false)` 现在只藏连接中（还没进服）的玩家——不藏会把折行挤歪；v3 没有截断了所以没有「被藏的溢出玩家」。
+- 🔴 **皮肤第二层（showHat）**：1.21.4 起协议多了这个字段，Velocity 建的条目**默认 false** —— 占位皮肤的猫耳（画在第二层）会整个看不见。所有经手的条目（假条目 / 补位 / 真人）都在 `applySlotState` 里 diff 置 `showHat=true`，配置项 `[layout].show-hat`（默认 true）。
+- 🔴 **没装 TAB 时其它子服的真人没有 Tab 条目**（Velocity 不合成全局列表，条目都是后端发的）→ 网格缺格会整列错位 → 用 `Player#getGameProfile()` 补（**真 UUID + 真皮肤**，v3.2.1）；`standins` 集合只记"我们补的"，玩家下线走 `forget()` 清。别再用占位皮肤的假条目顶真人。
 - 三层兜底：事件直刷 → refresh-delay-ms(200) 延迟补发（TAB 建条目竞态）→ reassert-seconds(3) 周期校准（Paper 重置 listOrder=0、TAB 覆写显示名）。全 diff 应用，无变化零发包。
 - 模式切换清场：flat→layout 先 `resetDisplayNames()`（清前缀）；layout→flat 先 `stripAll()`（拔假条目）。flat 模式显示名归本插件管，layout 模式不碰显示名（归 TAB）。
 - 颜色：自带 Colors 解析器（`&` 码 + `&#hex` + **渐变 `<#RRGGBB>文字</#RRGGBB>`**（v3.2，起止色逐字线性插值，段内仍认 `&l/&m` 等样式码；段内颜色码无效会被插值覆盖））。🔴 **`&#RRGGBB` 只换颜色不清样式**（原版 `§x` 同理）——否则 TAB 那套 `&l&#ffadbb欢&#f3b0c2迎…` 的加粗会被 hex 吃掉；只有命名颜色码 `&0-&f` 才清样式。不认识的 `%xxx%`、没闭合的 `<#` 原样输出，配错不炸。🔴 不能复用 Vmessage 的 ChatColors——插件 ClassLoader 隔离（铁律 2）。

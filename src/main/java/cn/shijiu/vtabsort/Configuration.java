@@ -69,6 +69,15 @@ public final class Configuration {
     private final String headerFormat;
     private final boolean separator;
     private final int blankPing;
+    /**
+     * 皮肤<b>第二层</b>（帽子层 / 1.21.4+ 协议里的 showHat）要不要渲染。
+     *
+     * <p>🔴 假条目/补位条目由本插件创建，Velocity 建的条目 showHat 默认是 false
+     * —— 皮肤的第二层（猫耳、帽子、头发外轮廓）就白了画。占位皮肤的猫耳
+     * 全在第二层，不打开等于看不见。真人的条目也一并置成 true（原版默认就是
+     * 显示两层）。
+     */
+    private final boolean showHat;
     private final String skinSpec;
     private final String skinSignature;
     private final String flatPrefix;
@@ -87,7 +96,7 @@ public final class Configuration {
 
     private Configuration(final Mode mode, final int maxColumns, final int rows,
                           final String headerFormat, final boolean separator,
-                          final int blankPing, final String skinSpec,
+                          final int blankPing, final boolean showHat, final String skinSpec,
                           final String skinSignature,
                           final String flatPrefix, final boolean flatSort,
                           final Map<String, String> serverNames,
@@ -103,6 +112,7 @@ public final class Configuration {
         this.headerFormat = headerFormat;
         this.separator = separator;
         this.blankPing = blankPing;
+        this.showHat = showHat;
         this.skinSpec = skinSpec;
         this.skinSignature = skinSignature;
         this.flatPrefix = flatPrefix;
@@ -136,7 +146,7 @@ public final class Configuration {
         messages.put("usage", "用法：/vtabsort reload | layout | demo | version");
         return new Configuration(Mode.LAYOUT, 4, 20,
                 "&e#name# &7· #count#", true,
-                0, "", "",
+                0, true, "", "",
                 "&7[&e#name#&7] ", true,
                 names, false, messages,
                 false, 3, 200, 3,
@@ -182,6 +192,11 @@ public final class Configuration {
 
     public int blankPing() {
         return blankPing;
+    }
+
+    /** 皮肤第二层（帽子层）是否渲染。 */
+    public boolean showHat() {
+        return showHat;
     }
 
     /**
@@ -297,6 +312,7 @@ public final class Configuration {
                 defaults().headerFormat());
         final boolean separator = TomlLite.bool(raw, "layout.separator", true);
         final int blankPing = (int) clamp(TomlLite.integer(raw, "layout.blank-ping", 0), 0, 60_000);
+        final boolean showHat = TomlLite.bool(raw, "layout.show-hat", true);
         // 皮肤：这里只留原文，解析/联网/缓存交给 SkinCache
         final String skinSig = TomlLite.string(raw, "layout.default-skin-signature", "").trim();
         final String skinSpec = TomlLite.string(raw, "layout.default-skin", "").trim();
@@ -340,7 +356,7 @@ public final class Configuration {
                 defaults().footerLines());
 
         return new Configuration(mode, maxColumns, rows, headerFormat, separator,
-                blankPing, skinSpec, skinSig, flatPrefix, flatSort,
+                blankPing, showHat, skinSpec, skinSig, flatPrefix, flatSort,
                 names, byJoin, messages,
                 autoReload, interval, delay, reassert,
                 hfEnabled, header, footer);

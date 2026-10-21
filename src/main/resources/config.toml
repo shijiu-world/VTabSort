@@ -32,6 +32,10 @@ rows = 20
 header-format = "&e#name# &7· #count#"   # 列头/分节头；#name# = 子服显示名，#count# = 该服总在线数（续列不变）
 separator = true       # 共享列里两个子服分节之间空一行
 blank-ping = 0         # 假人条目的伪装延迟（毫秒；0 = 满信号）
+#   show-hat = 皮肤**第二层**（帽子层）要不要渲染。1.21.4 起协议里多了这个字段，
+#     插件建的条目默认是关的 —— 占位皮肤的猫耳画在第二层，关了就看不见。
+#     真人的条目也会一并置成开（原版默认就是两层都显示）。
+show-hat = true
 #   default-skin = 假人皮肤。五种写法都认（推荐第 ① 种）：
 #      ① player:<玩家名>      例 "player:Notch" —— **自动联网取该玩家的皮肤**
 #         （带 Mojang 真签名），结果缓存到 plugins/vtabsort/skin-cache.properties；

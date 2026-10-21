@@ -374,7 +374,7 @@ final class LayoutManager {
                     // 真条目在：它自己（或我们补的那条）占着这格，补位记录清掉
                     standins.remove(slot.player);
                     removeFake(tabList, fakeId); // 老版本可能在这格留了占位假条目
-                    applySlotState(entry, order);
+                    applySlotState(entry, order, cfg.showHat());
                 } else {
                     removeFake(tabList, fakeId);
                     // 🔴 真条目还没建出来（其它子服的玩家 / 事件竞态）：
@@ -396,7 +396,7 @@ final class LayoutManager {
                     if (!Objects.equals(entry.getDisplayNameComponent().orElse(null), slot.display)) {
                         setDisplay(entry, slot.display);
                     }
-                    applySlotState(entry, order);
+                    applySlotState(entry, order, cfg.showHat());
                 }
             }
         }
@@ -426,13 +426,23 @@ final class LayoutManager {
         }
     }
 
-    /** 槽位的公共状态：顺序 + 可见。全 diff，没变化一个包都不发。 */
-    private static void applySlotState(final TabListEntry entry, final int order) {
+    /**
+     * 槽位的公共状态：顺序 + 可见 + 双层皮肤。全 diff，没变化一个包都不发。
+     *
+     * <p>🔴 showHat 必须显式打开：1.21.4 起协议里多了一个「要不要渲染皮肤第二层」
+     * 的字段，Velocity 建的条目默认 false —— 占位皮肤的猫耳（画在第二层）就
+     * 全丢了。真人的条目也一并置 true（原版默认就是两层都显示）。
+     */
+    private static void applySlotState(final TabListEntry entry, final int order,
+                                       final boolean showHat) {
         if (entry.getListOrder() != order) {
             setOrder(entry, order);
         }
         if (!entry.isListed()) {
             setListed(entry, true);
+        }
+        if (showHat && !entry.isShowHat()) {
+            setShowHat(entry, true);
         }
     }
 
@@ -463,6 +473,7 @@ final class LayoutManager {
                     .gameMode(0)
                     .listed(true)
                     .listOrder(order)
+                    .showHat(cfg.showHat())
                     .build();
             tabList.addEntry(entry);
             standins.add(uuid);
@@ -504,6 +515,7 @@ final class LayoutManager {
                     .gameMode(0)
                     .listed(true)
                     .listOrder(order)
+                    .showHat(cfg.showHat())
                     .build();
             tabList.addEntry(entry);
         } catch (final Exception ignored) {
@@ -598,6 +610,13 @@ final class LayoutManager {
     private static void setListed(final TabListEntry entry, final boolean value) {
         try {
             entry.setListed(value);
+        } catch (final Exception ignored) {
+        }
+    }
+
+    private static void setShowHat(final TabListEntry entry, final boolean value) {
+        try {
+            entry.setShowHat(value);
         } catch (final Exception ignored) {
         }
     }
