@@ -67,8 +67,16 @@ final class LayoutManager {
     // ------------------------------------------------------------------
 
     LayoutModel build(final Configuration cfg) {
+        return build(cfg, null);
+    }
+
+    /**
+     * @param demo demo 虚拟玩家（服名 → 身份列表）；null/空 = 没开模拟。
+     *             虚拟玩家与真人混进同一套分节/排序/填槽逻辑，走的全是真实代码路径。
+     */
+    LayoutModel build(final Configuration cfg, final Map<String, List<TabUser>> demo) {
         // 1) 玩家按子服分组；还没进任何服的（连接中）稍后隐藏
-        final Map<String, List<Player>> byServer = new LinkedHashMap<>();
+        final Map<String, List<TabUser>> byServer = new LinkedHashMap<>();
         final List<Player> noServer = new ArrayList<>();
         for (final Player p : proxy.getAllPlayers()) {
             final String s = serverOf(p);
@@ -76,7 +84,14 @@ final class LayoutManager {
                 noServer.add(p);
                 continue;
             }
-            byServer.computeIfAbsent(s, k -> new ArrayList<>()).add(p);
+            byServer.computeIfAbsent(s, k -> new ArrayList<>())
+                    .add(new TabUser(p.getUniqueId(), p.getUsername(), sorter.joinSeqOf(p.getUniqueId())));
+        }
+        // 1.5) demo 虚拟玩家注入（uuid=null，渲染走假条目路径）
+        if (demo != null) {
+            for (final Map.Entry<String, List<TabUser>> e : demo.entrySet()) {
+                byServer.computeIfAbsent(e.getKey(), k -> new ArrayList<>()).addAll(e.getValue());
+            }
         }
 
         // 2) 子服清单：**只要有人在线的**。0 人的子服整个不出现（连列头都没有），
@@ -85,10 +100,10 @@ final class LayoutManager {
         final List<String> servers = new ArrayList<>(byServer.keySet());
         Collections.sort(servers); // 先按服名排，给下面的人数平手兜一个稳定序
 
-        final Comparator<Player> pc = sorter.playerComparator(cfg);
+        final Comparator<TabUser> pc = sorter.tabUserComparator(cfg);
         final List<Sec> secs = new ArrayList<>();
         for (final String s : servers) {
-            final List<Player> ps = new ArrayList<>(byServer.get(s));
+            final List<TabUser> ps = new ArrayList<>(byServer.get(s));
             ps.sort(pc);
             secs.add(new Sec(s, cfg.serverDisplayName(s), ps));
         }
@@ -264,7 +279,13 @@ final class LayoutManager {
                     .replace("#count#", String.valueOf(sec.count())))));
             placed++;
             for (int k = part.from(); k < part.to(); k++) {
-                slots.add(new LayoutModel.Slot(sec.players.get(k).getUniqueId(), null));
+                final TabUser u = sec.players.get(k);
+                if (u.virtual()) {
+                    // demo 虚拟玩家：走假条目路径，显示名 = 名字（和真人观感一致）
+                    slots.add(new LayoutModel.Slot(null, Component.text(u.name())));
+                } else {
+                    slots.add(new LayoutModel.Slot(u.uuid(), null));
+                }
                 placed++;
             }
             sds.add(new LayoutModel.SectionDesc(sec.server, sec.display, sec.count(),
@@ -446,13 +467,13 @@ final class LayoutManager {
         }
     }
 
-    /** 一个子服分节：显示名 + 分好序的玩家列表。 */
+    /** 一个子服分节：显示名 + 分好序的玩家（真人或 demo 虚拟玩家）列表。 */
     private static final class Sec {
         final String server;
         final String display;
-        final List<Player> players;
+        final List<TabUser> players;
 
-        Sec(final String server, final String display, final List<Player> players) {
+        Sec(final String server, final String display, final List<TabUser> players) {
             this.server = server;
             this.display = display;
             this.players = players;

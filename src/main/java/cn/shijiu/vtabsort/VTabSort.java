@@ -13,13 +13,16 @@ import com.velocitypowered.api.event.proxy.ProxyInitializeEvent;
 import com.velocitypowered.api.plugin.Plugin;
 import com.velocitypowered.api.plugin.annotation.DataDirectory;
 import com.velocitypowered.api.proxy.ProxyServer;
+import com.velocitypowered.api.scheduler.ScheduledTask;
 import net.kyori.adventure.text.Component;
 import org.slf4j.Logger;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
@@ -74,6 +77,10 @@ public final class VTabSort {
      * —— auto 模式下配置没变但落地模式会变。
      */
     private final AtomicReference<Configuration.Mode> appliedMode = new AtomicReference<>();
+    /** demo 虚拟玩家模拟器（/vts demo）。 */
+    private final DemoSim demo = new DemoSim();
+    /** 流动模拟的定时任务（/vts demo off 时取消）。 */
+    private volatile ScheduledTask demoFlowTask;
 
     @Inject
     public VTabSort(final ProxyServer proxy, final Logger logger, @DataDirectory final Path dataDirectory) {
@@ -141,7 +148,8 @@ public final class VTabSort {
      */
     private void rebuildNow() {
         final Configuration cfg = config;
-        final Configuration.Mode effective = cfg.effectiveMode(proxy.getPlayerCount());
+        // demo 虚拟玩家计入 auto 的翻面判定（模拟人多时的行为才算数）
+        final Configuration.Mode effective = cfg.effectiveMode(proxy.getPlayerCount() + demo.virtualCount());
         final Configuration.Mode previous = appliedMode.getAndSet(effective);
         if (previous != null && previous != effective) {
             if (effective == Configuration.Mode.LAYOUT) {
@@ -151,7 +159,7 @@ public final class VTabSort {
             }
         }
         if (effective == Configuration.Mode.LAYOUT) {
-            layoutManager.applyAll(layoutManager.build(cfg), cfg);
+            layoutManager.applyAll(layoutManager.build(cfg, demo.snapshot()), cfg);
         } else {
             flatManager.applyAll(cfg);
         }
@@ -193,6 +201,13 @@ public final class VTabSort {
                     }
                     printLayout(source);
                 }
+                case "demo" -> {
+                    if (!source.hasPermission("vtabsort.reload")) {
+                        send(source, config.message("no-permission"));
+                        return;
+                    }
+                    handleDemo(source, args);
+                }
                 case "version", "info" -> send(source, "VTabSort " + version()
                         + " —— Tab 展示（layout 网格 / flat 前缀），不碰 scoreboard team");
                 default -> send(source, config.message("usage"));
@@ -202,26 +217,117 @@ public final class VTabSort {
         @Override
         public List<String> suggest(final Invocation invocation) {
             if (invocation.arguments().length <= 1) {
-                return List.of("reload", "layout", "version");
+                return List.of("reload", "layout", "demo", "version");
             }
             return List.of();
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // demo：虚拟玩家模拟（看 layout 网格随人数变化的效果）
+    // ------------------------------------------------------------------
+
+    /**
+     * <pre>
+     * /vts demo                        查看状态
+     * /vts demo off                    关掉并清理
+     * /vts demo lobby:5 survival:12    固定各服人数
+     * /vts demo flow [总人数]           流动模拟（默认 30；每 2 秒随机进出/换服）
+     * </pre>
+     */
+    private void handleDemo(final CommandSource source, final String[] args) {
+        if (config.mode() == Configuration.Mode.FLAT) {
+            send(source, "当前是 flat 模式，网格看不到 —— 先切 layout/auto 再 demo。");
+            return;
+        }
+        if (args.length < 2) {
+            send(source, "demo 状态：" + demo.describe());
+            send(source, "用法：/vts demo off | /vts demo lobby:5 survival:12 | /vts demo flow [总人数]");
+            return;
+        }
+        final String op = args[1].toLowerCase(Locale.ROOT);
+        switch (op) {
+            case "off" -> {
+                stopDemoFlow();
+                demo.clear();
+                refreshAllSoon();
+                send(source, "demo 已关，虚拟玩家清掉了。");
+            }
+            case "flow" -> {
+                int total = 30;
+                if (args.length >= 3) {
+                    try {
+                        total = Integer.parseInt(args[2]);
+                    } catch (final NumberFormatException e) {
+                        send(source, "总人数得是数字：" + args[2]);
+                        return;
+                    }
+                }
+                total = Math.max(1, Math.min(total, 300));
+                stopDemoFlow();
+                final List<String> pool = config.knownServers();
+                demo.startFlow(pool, total);
+                demoFlowTask = proxy.getScheduler().buildTask(this, () -> {
+                    demo.tick(pool);
+                    refreshAllSoon();
+                }).delay(2, TimeUnit.SECONDS).repeat(2, TimeUnit.SECONDS).schedule();
+                refreshAllSoon();
+                send(source, "流动模拟开始（基数 " + total + " 人，池子 "
+                        + pool.size() + " 个服）——Tab 里看着，每 2 秒有人进出/换服。");
+            }
+            default -> {
+                // server:count 串
+                final Map<String, Integer> counts = new LinkedHashMap<>();
+                for (int i = 1; i < args.length; i++) {
+                    final int colon = args[i].lastIndexOf(':');
+                    if (colon <= 0 || colon == args[i].length() - 1) {
+                        send(source, "看不懂这截：" + args[i]
+                                + "（要写成 服名:人数，如 lobby:5）");
+                        return;
+                    }
+                    final String server = args[i].substring(0, colon).toLowerCase(Locale.ROOT);
+                    final int count;
+                    try {
+                        count = Integer.parseInt(args[i].substring(colon + 1));
+                    } catch (final NumberFormatException e) {
+                        send(source, "人数得是数字：" + args[i]);
+                        return;
+                    }
+                    counts.put(server, Math.max(0, count));
+                }
+                stopDemoFlow();
+                demo.setFixed(counts);
+                refreshAllSoon();
+                send(source, "固定模拟开始：" + demo.describe());
+            }
+        }
+    }
+
+    private void stopDemoFlow() {
+        final ScheduledTask task = demoFlowTask;
+        if (task != null) {
+            task.cancel();
+            demoFlowTask = null;
         }
     }
 
     /** 无客户端也能核对布局：把当前网格的分列模型打给命令发起者。 */
     private void printLayout(final CommandSource source) {
         final Configuration cfg = config;
-        final Configuration.Mode effective = cfg.effectiveMode(proxy.getPlayerCount());
+        final Configuration.Mode effective = cfg.effectiveMode(proxy.getPlayerCount() + demo.virtualCount());
         if (cfg.mode() == Configuration.Mode.AUTO) {
-            send(source, "auto 模式：在线 " + proxy.getPlayerCount() + " 人，阈值 "
-                    + cfg.rows() + " → 当前落地 " + effective.key());
+            send(source, "auto 模式：在线 " + (proxy.getPlayerCount() + demo.virtualCount())
+                    + " 人（含模拟），阈值 " + cfg.rows() + " → 当前落地 " + effective.key());
+        }
+        if (demo.isActive()) {
+            send(source, "demo 模拟中：" + demo.describe());
         }
         if (effective != Configuration.Mode.LAYOUT) {
             send(source, "当前是 flat 展示：排序 " + (cfg.flatSort() ? "开" : "关")
                     + "，前缀格式 " + cfg.flatPrefix());
             return;
         }
-        final LayoutModel model = layoutManager.build(cfg);
+        final LayoutModel model = layoutManager.build(cfg, demo.snapshot());
         send(source, "layout 网格：" + model.columnCount + " 列 × " + model.rows
                 + " 行（行数上限 " + cfg.rows() + "，列预算 " + cfg.maxColumns()
                 + (model.exceedsColumns ? "，内容塞不下已超列预算" : "")

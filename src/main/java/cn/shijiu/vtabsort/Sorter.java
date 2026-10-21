@@ -63,6 +63,22 @@ final class Sorter {
         return cmp.thenComparing(Player::getUsername, String.CASE_INSENSITIVE_ORDER);
     }
 
+    /** 玩家的进代理序号；没记录的（热加载后才在线）MAX_VALUE 兜底。 */
+    long joinSeqOf(final UUID uuid) {
+        return joinSeq.getOrDefault(uuid, Long.MAX_VALUE);
+    }
+
+    /**
+     * TabUser（真人 + demo 虚拟玩家）的排序比较器，语义与 {@link #playerComparator}
+     * 一致：join 模式按序号，否则按名字；末位平手按名字大小写不敏感。
+     */
+    Comparator<TabUser> tabUserComparator(final Configuration cfg) {
+        final Comparator<TabUser> primary = cfg.sameServerByJoin()
+                ? Comparator.comparingLong(TabUser::joinSeq)
+                : Comparator.comparing(u -> u.name().toLowerCase(Locale.ROOT));
+        return primary.thenComparing(TabUser::name, String.CASE_INSENSITIVE_ORDER);
+    }
+
     /**
      * flat 排序：算每个玩家的 listOrder。
      *

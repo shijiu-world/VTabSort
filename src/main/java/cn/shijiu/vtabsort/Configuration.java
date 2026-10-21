@@ -8,6 +8,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.TreeMap;
@@ -183,6 +184,11 @@ public final class Configuration {
     /** 子服显示名（键已转小写）；没配的用服名原文。 */
     public String serverDisplayName(final String server) {
         return serverNames.getOrDefault(server, server);
+    }
+
+    /** 已知子服清单（[servers.names] 的键，已排序）——demo 模拟的玩家池。 */
+    public List<String> knownServers() {
+        return List.copyOf(serverNames.keySet());
     }
 
     public boolean sameServerByJoin() {

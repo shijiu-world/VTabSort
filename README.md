@@ -90,7 +90,19 @@ survival = "生存净土"
 |---|---|---|
 | `/vtabsort reload`（别名 `/vts`） | 重载配置并立即重排 | `vtabsort.reload` |
 | `/vtabsort layout` | 打印当前分列模型（无客户端也能核对布局） | `vtabsort.reload` |
+| `/vtabsort demo` | 查看虚拟玩家模拟状态 | `vtabsort.reload` |
+| `/vtabsort demo lobby:5 survival:12` | 固定各服虚拟人数，真实客户端里看网格效果 | `vtabsort.reload` |
+| `/vtabsort demo flow [总人数]` | 流动模拟（默认 30 人，每 2 秒随机进出/换服，0 人服的列自动消失） | `vtabsort.reload` |
+| `/vtabsort demo off` | 关掉模拟并清掉虚拟玩家 | `vtabsort.reload` |
 | `/vtabsort version` | 看版本 | 无 |
+
+### demo 虚拟玩家模拟（v3.0.0+）
+
+想在**真实客户端**里看玩家进出时网格怎么动，用 `/vts demo`：虚拟玩家没有连接，
+在布局引擎里与真人共用同一套分节/排序/续列代码路径，Tab 里观感与真人一致
+（默认皮肤、可配 ping）。auto 模式的翻面判定也把虚拟人数算进去。
+只在 layout/auto（人数超阈值）下有视觉效果；flat 模式会提示先切模式。
+顺带一提：GitHub Pages 上还有一个纯前端的[分列算法模拟器](docs/index.html)，不用起服就能调参预览。
 
 ## 构建
 
