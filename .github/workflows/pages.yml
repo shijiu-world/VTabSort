@@ -1,0 +1,50 @@
+name: 部署模拟器到 Pages
+
+# docs/ 下的 Tab 模拟器（纯静态单文件）发布到 GitHub Pages。
+# 🔴 首次使用需要在仓库 Settings → Pages → Build and deployment →
+#    Source 选 "GitHub Actions"（只用点一次，之后全自动）。
+#    不能在工作流里自动开启：configure-pages 的 enablement 选项要求
+#    比 GITHUB_TOKEN 更高的权限（PAT 的 repo scope 或 App 的
+#    administration:write），不值得为此塞一个长期密钥。
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'docs/**'
+      - '.github/workflows/pages.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# 同时只跑一个部署；排队中的旧任务直接取消（新的内容才是对的）
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v5
+
+      - name: 准备 Pages
+        uses: actions/configure-pages@v6
+
+      # 整个 docs/ 目录就是站点，入口 docs/index.html
+      - name: 打包站点
+        uses: actions/upload-pages-artifact@v5
+        with:
+          path: docs
+
+      - name: 部署
+        id: deployment
+        uses: actions/deploy-pages@v5
