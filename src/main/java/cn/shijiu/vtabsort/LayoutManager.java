@@ -382,7 +382,8 @@ final class LayoutManager {
                     //    客户端看到的就是本人；实在拿不到（人刚好下线）才退化成
                     //    同名假条目占位 —— 那格不补的话总条目少 1，客户端折行
                     //    重算会把整列挤歪。
-                    if (!addStandIn(viewer, tabList, slot.player, slot.name, order)) {
+                    if (!addStandIn(viewer, tabList, slot.player, slot.name, order,
+                            cfg.showHat())) {
                         final Component placeholder =
                                 Component.text(slot.name == null ? "" : slot.name);
                         addFake(tabList, i, order, placeholder, cfg);
@@ -459,7 +460,7 @@ final class LayoutManager {
      * @return 补成功了没（false = 人已经不在了，调用方退化成假条目占位）
      */
     private boolean addStandIn(final Player viewer, final TabList tabList, final UUID uuid,
-                               final String name, final int order) {
+                               final String name, final int order, final boolean showHat) {
         final Player target = proxy.getPlayer(uuid).orElse(null);
         if (target == null) {
             return false; // 人刚好下线：下一轮网格自己会收掉这格
@@ -473,7 +474,7 @@ final class LayoutManager {
                     .gameMode(0)
                     .listed(true)
                     .listOrder(order)
-                    .showHat(cfg.showHat())
+                    .showHat(showHat)
                     .build();
             tabList.addEntry(entry);
             standins.add(uuid);
