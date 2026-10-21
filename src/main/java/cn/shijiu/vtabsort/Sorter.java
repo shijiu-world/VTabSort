@@ -4,7 +4,6 @@ import com.velocitypowered.api.proxy.Player;
 import com.velocitypowered.api.proxy.ProxyServer;
 
 import java.util.ArrayList;
-import java.util.Collections;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
@@ -21,6 +20,10 @@ import java.util.concurrent.atomic.AtomicLong;
  * <p>排序值 = 子服优先级 × 1_000_000 + 同服内序号，客户端（1.21.2+）按
  * listOrder 原生排序，完全不经过 scoreboard team。溢出保护：优先级封顶
  * 2000、序号封顶 999_999（2000×1e6+999_999 &lt; Integer.MAX_VALUE）。
+ *
+ * <p>v3：子服优先级不再来自 {@code [servers].order}（已删），改成和 layout
+ * 一样按**人数降序**（平手按服名升序）—— 两个模式的子服先后顺序保持一致，
+ * auto 模式切换时视觉跳动最小。
  */
 final class Sorter {
 
@@ -63,11 +66,12 @@ final class Sorter {
     /**
      * flat 排序：算每个玩家的 listOrder。
      *
-     * <p>每个子服（含未列出的）的基数互不相同，否则两个子服的玩家会按
-     * 各自组内序号交叉混排：已列出的按 order 位置；未列出的按服名升序
-     * 分到已列出服的前面（unknown=before）或后面的连续区间。恒非负
-     * （协议要求 non-negative），PRIORITY_CAP 截断只有 order 列了
-     * 2000+ 个服才触发。
+     * <p>每个子服的基数互不相同，否则两个子服的玩家会按各自组内序号交叉
+     * 混排。基数 = 人数降序的排名（平手按服名升序），所以人多的服在上。
+     * 恒非负（协议要求 non-negative），PRIORITY_CAP 截断只有在线服超过
+     * 2000 个才触发。
+     *
+     * <p>还没进任何服的玩家（"" 组）排最后。
      */
     Map<UUID, Integer> computeOrders(final Configuration config) {
         // 1. 按子服分组（还没进任何服的算 "" 组）
@@ -80,28 +84,18 @@ final class Sorter {
             byServer.computeIfAbsent(server, k -> new ArrayList<>()).add(player);
         }
 
-        // 2. 基数
-        final List<String> order = config.serverOrder();
+        // 2. 基数 = 人数降序排名（平手服名升序）；"" 组（连接中）钉在最后
+        final List<String> ranked = new ArrayList<>(byServer.keySet());
+        ranked.remove("");
+        ranked.sort(Comparator
+                .comparingInt((String s) -> -byServer.get(s).size())
+                .thenComparing(s -> s));
         final Map<String, Integer> base = new HashMap<>();
-        final List<String> unknownServers = new ArrayList<>();
-        for (final String server : byServer.keySet()) {
-            if (order.indexOf(server) >= 0) {
-                base.put(server, order.indexOf(server));
-            } else {
-                unknownServers.add(server);
-            }
+        for (int i = 0; i < ranked.size(); i++) {
+            base.put(ranked.get(i), Math.min(i, PRIORITY_CAP));
         }
-        Collections.sort(unknownServers); // 服名升序（都是小写）
-        final int unknownCount = unknownServers.size();
-        final int offset = config.unknownFirst() ? unknownCount : 0;
-        for (final Map.Entry<String, Integer> e : base.entrySet()) {
-            e.setValue(Math.min(offset + e.getValue(), PRIORITY_CAP));
-        }
-        for (int i = 0; i < unknownCount; i++) {
-            final int b = config.unknownFirst()
-                    ? i
-                    : Math.min(order.size(), PRIORITY_CAP) + i;
-            base.put(unknownServers.get(i), Math.min(b, PRIORITY_CAP));
+        if (byServer.containsKey("")) {
+            base.put("", Math.min(ranked.size(), PRIORITY_CAP));
         }
 
         // 3. 组内排序 + 拼顺序值

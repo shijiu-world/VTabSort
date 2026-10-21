@@ -29,13 +29,19 @@ import java.util.UUID;
  * <pre>
  *   natural = 最高的那列内容高度（头 + 玩家 + 分节空行）
  *   rMin    = 让客户端开出 C 列的最小行数（4 列 ≥ 16 行）
- *   行数 R  = natural ≤ rows 上限 ? max(natural, rMin) : rows 上限（截断）
+ *   行数 R  = max(natural, rMin)
  * </pre>
  * 总条目恒等于 C×R，客户端就渲染出精确的 C 列 × R 行。
  *
- * <p>分列规则（服主定的）：每个子服先各占一列；子服数超过 max-columns 时，
- * 人数最多的 (max-1) 个独占列，**其余全部进一个共享列**（分节按人数降序、
- * 人多的在上、分节间空一行）。共享列装下所有服仍超高时允许溢出，不截断。
+ * <p><b>v3 分列规则</b>（不再有服主排的 order，也不再折叠）：
+ * <ol>
+ *   <li>子服按<b>人数降序</b>排（平手按服名升序），列的左右顺序就是这个顺序；</li>
+ *   <li>一个子服装不下一列（人数 &gt; rows-1）就<b>续开一列</b>，
+ *       续的列紧跟在它后面、列头文字完全一样（含总人数）；</li>
+ *   <li>列预算（max-columns）不够时，排在后面的小服<b>并进共享列</b>
+ *       （分节按人数降序、分节间空一行），共享列永远在<b>最后一列</b>；</li>
+ *   <li>共享列塞不下也不截断、不折叠 —— 允许溢出（网格变形但不丢人）。</li>
+ * </ol>
  */
 final class LayoutManager {
 
@@ -70,16 +76,17 @@ final class LayoutManager {
             byServer.computeIfAbsent(s, k -> new ArrayList<>()).add(p);
         }
 
-        // 2) 子服清单：order 里全部（0 人也占分节，网格稳定）+ 未列出的在线服（按名排序）
-        final List<String> servers = new ArrayList<>(cfg.serverOrder());
-        final List<String> unknown = new ArrayList<>();
+        // 2) 子服清单：[servers.names] 里列出的全部（0 人也占分节，网格稳定）
+        //    + 没列出但有人在线的（新加的后端不配也能显示）
+        final List<String> servers = new ArrayList<>(cfg.knownServers());
+        final List<String> extra = new ArrayList<>();
         for (final String s : byServer.keySet()) {
             if (!servers.contains(s)) {
-                unknown.add(s);
+                extra.add(s);
             }
         }
-        Collections.sort(unknown);
-        servers.addAll(unknown);
+        Collections.sort(extra);
+        servers.addAll(extra);
 
         final Comparator<Player> pc = sorter.playerComparator(cfg);
         final List<Sec> secs = new ArrayList<>();
@@ -88,41 +95,30 @@ final class LayoutManager {
             ps.sort(pc);
             secs.add(new Sec(s, cfg.serverDisplayName(s), ps));
         }
+        // 人数降序（平手按服名升序）——这就是列的左右顺序
+        secs.sort(Comparator.comparingInt((Sec s) -> -s.count()).thenComparing(s -> s.server));
 
-        // 3) 分列
-        final int max = Math.max(1, cfg.maxColumns());
-        final List<List<Sec>> columnsRaw = splitIntoColumns(secs, max);
+        // 3) 分列（含同一子服跨多列的续列 + 尾部共享列）
+        final int cap = Math.max(2, cfg.rows());
+        final Plan plan = allocate(secs, Math.max(1, cfg.maxColumns()), cap, cfg.separator());
+        final List<Col> cols = plan.cols();
 
         // 4) 自适应行数
-        final int cap = cfg.rows();
-        final int c = Math.max(1, columnsRaw.size());
+        final int c = Math.max(1, cols.size());
         int natural = 0;
-        for (final List<Sec> col : columnsRaw) {
-            int h = 0;
-            for (final Sec sec : col) {
-                h += 1 + sec.count();
-            }
-            if (col.size() > 1 && cfg.separator()) {
-                h += col.size() - 1;
-            }
-            natural = Math.max(natural, h);
+        for (final Col col : cols) {
+            natural = Math.max(natural, col.height(plan.separator()));
         }
         // ceil((cap*(c-1)+1) / c)：客户端开出 c 列的最小行数
         final int rMin = (cap * (c - 1) + 1 + c - 1) / c;
-        final boolean trunc = natural > cap;
-        final int r = trunc ? cap : Math.max(natural, rMin);
-        // 溢出策略：truncate=false（配置）→ 全局允许溢出（网格会变形，注释已写明）；
-        // 服主规则：所有服并进一列仍超高 → 允许溢出（不截断）。
-        final boolean allMerged = columnsRaw.size() == 1 && columnsRaw.get(0).size() > 1;
-        final boolean allowExceed = !cfg.truncate() || !trunc || allMerged;
+        final int r = Math.max(Math.max(natural, rMin), 1);
 
         // 5) 填槽（列主序，槽位号 = 全局序号，与客户端折行一致）
         final List<LayoutModel.Slot> slots = new ArrayList<>();
         final Map<UUID, Integer> orders = new HashMap<>();
-        final Set<UUID> hidden = new LinkedHashSet<>();
         final List<LayoutModel.ColumnDesc> colDescs = new ArrayList<>();
-        for (final List<Sec> col : columnsRaw) {
-            fillColumn(col, r, allowExceed, cfg, slots, hidden, colDescs);
+        for (final Col col : cols) {
+            fillColumn(col, r, plan.separator(), cfg, slots, colDescs);
         }
         for (int i = 0; i < slots.size(); i++) {
             final UUID u = slots.get(i).player;
@@ -132,110 +128,153 @@ final class LayoutManager {
         }
 
         // 6) 还没进服的（连接中）藏起来——不然它们会以原版顺序挤进网格把折行挤歪
+        final Set<UUID> hidden = new LinkedHashSet<>();
         for (final Player p : noServer) {
             hidden.add(p.getUniqueId());
         }
-        return new LayoutModel(slots, orders, hidden, colDescs, r);
+        return new LayoutModel(slots, orders, hidden, colDescs, r,
+                !plan.fitted(), cfg.separator() && !plan.separator());
     }
 
     /**
-     * 分列：≤max 各占一列；超了 → 人数降序排名，前 (max-1) 名独占，
-     * 其余全进共享列（ranked 本身就是人数降序，平手按 order 位置）。
-     * 列的左右顺序 = 各列最靠前的 order 成员的位置。
+     * 列预算分配。secs 已按人数降序排好。
+     *
+     * <p>每列一行要给列头，所以一列能放 cap-1 个人；人更多的子服按这个
+     * 容量续开列（续列紧跟其后、列头文字不变）。列预算不够时，排在后面的
+     * 小服并进共享列（永远在最后）。
+     *
+     * <p>特例：如果「剩下的服」只有一个，那它根本不该叫共享列 —— 直接当独占
+     * 列处理（能续几列续几列）。这样一个 100 人的大服在 max-columns=4 下会
+     * 摊成 4 列 ×25 人，而不是挤成一坨。
      */
-    private List<List<Sec>> splitIntoColumns(final List<Sec> secs, final int max) {
-        final List<List<Sec>> out = new ArrayList<>();
-        if (secs.size() <= max) {
-            for (final Sec s : secs) {
-                out.add(List.of(s));
-            }
-            return out;
+    private Plan allocate(final List<Sec> secs, final int max, final int cap,
+                          final boolean separatorWanted) {
+        if (secs.isEmpty()) {
+            return new Plan(List.of(), 0, separatorWanted, true);
         }
-        final Map<String, Integer> pos = new HashMap<>();
-        for (int i = 0; i < secs.size(); i++) {
-            pos.put(secs.get(i).server, i);
+        final Plan withSep = tryAllocate(secs, max, cap, separatorWanted);
+        if (!separatorWanted) {
+            return withSep;
         }
-        final List<Sec> ranked = new ArrayList<>(secs);
-        ranked.sort(Comparator.comparingInt((Sec s) -> -s.count()).thenComparingInt(s -> pos.get(s.server)));
+        // 分节空行是可牺牲的：去掉它能让更多子服独占列（或从「超预算」变成装得下）
+        final Plan without = tryAllocate(secs, max, cap, false);
+        if (withSep.fitted()) {
+            return without.fitted() && without.ownCount() > withSep.ownCount()
+                    ? without
+                    : withSep;
+        }
+        return without.fitted() ? without : withSep;
+    }
 
-        record Col(List<Sec> secs, int key) {
+    /**
+     * 一趟分配：前 k 个子服独占列（人多的自己续列），其余并进尾部的共享列。
+     * k 从大到小试 —— 优先让更多子服独占（更贴合「按人数降序分列」），
+     * 第一个能塞进 max 列的就是答案。
+     *
+     * <p>全都塞不下（内容真的超过 max 列 × cap 行）：k=0 全共享兜底，
+     * **守住行数上限、让列数溢出** —— 行数是客户端硬约束（超了就被折成
+     * 别的形状），列预算只是服主的期望值，两者只能保一个。
+     */
+    private Plan tryAllocate(final List<Sec> secs, final int max, final int cap,
+                             final boolean separator) {
+        final int perColumn = Math.max(1, cap - 1); // 一列能放的玩家数（扣掉列头）
+        for (int k = secs.size(); k >= 0; k--) {
+            final List<Col> cols = new ArrayList<>();
+            for (final Sec s : secs.subList(0, k)) {
+                cols.addAll(spill(s, need(s.count(), perColumn)));
+            }
+            final List<Sec> tail = secs.subList(k, secs.size());
+            if (!tail.isEmpty()) {
+                cols.addAll(packShared(tail, cap, separator));
+            }
+            if (cols.size() <= max) {
+                return new Plan(cols, k, separator, true);
+            }
         }
+        return new Plan(packShared(secs, cap, separator), 0, separator, false);
+    }
+
+    /**
+     * 把共享的子服按顺序装进若干列，每列高度 ≤ cap。
+     * 某个服自己就超过一列容量时，它先自己续列（别把一列撑爆）。
+     */
+    private List<Col> packShared(final List<Sec> shared, final int cap, final boolean separator) {
+        final int perColumn = Math.max(1, cap - 1);
         final List<Col> cols = new ArrayList<>();
-        for (int i = 0; i < max - 1; i++) {
-            final List<Sec> own = List.of(ranked.get(i));
-            cols.add(new Col(own, pos.get(ranked.get(i).server)));
-        }
-        final List<Sec> shared = new ArrayList<>(ranked.subList(max - 1, ranked.size()));
-        int sharedKey = Integer.MAX_VALUE;
+        List<Part> cur = new ArrayList<>();
         for (final Sec s : shared) {
-            sharedKey = Math.min(sharedKey, pos.get(s.server));
+            if (s.count() > perColumn) {
+                if (!cur.isEmpty()) {
+                    cols.add(new Col(List.copyOf(cur)));
+                    cur = new ArrayList<>();
+                }
+                cols.addAll(spill(s, need(s.count(), perColumn)));
+                continue;
+            }
+            final List<Part> next = new ArrayList<>(cur);
+            next.add(new Part(s, 0, s.count(), 1, 1));
+            if (!cur.isEmpty() && new Col(next).height(separator) > cap) {
+                cols.add(new Col(List.copyOf(cur)));
+                cur = new ArrayList<>();
+                cur.add(new Part(s, 0, s.count(), 1, 1));
+            } else {
+                cur = next;
+            }
         }
-        cols.add(new Col(shared, sharedKey));
-        cols.sort(Comparator.comparingInt(Col::key));
-        for (final Col col : cols) {
-            out.add(col.secs);
+        if (!cur.isEmpty()) {
+            cols.add(new Col(List.copyOf(cur)));
+        }
+        return cols;
+    }
+
+    /** 一个子服摊成 n 列：人数均分（余数给前面的列），每列一个 Part。 */
+    private static List<Col> spill(final Sec sec, final int n) {
+        final List<Col> out = new ArrayList<>(n);
+        final int base = sec.count() / n;
+        final int rem = sec.count() % n;
+        int at = 0;
+        for (int i = 0; i < n; i++) {
+            final int take = base + (i < rem ? 1 : 0);
+            out.add(new Col(List.of(new Part(sec, at, at + take, i + 1, n))));
+            at += take;
         }
         return out;
     }
 
+    /** n 个人按每列 perColumn 个，需要几列（至少 1，空服也要有列头）。 */
+    private static int need(final int n, final int perColumn) {
+        return Math.max(1, (n + perColumn - 1) / perColumn);
+    }
+
     /** 把一列填成恰好 rows 高：分节头、玩家、分节空行、假人补位。 */
-    private void fillColumn(final List<Sec> col, final int rows,
-                            final boolean allowExceed, final Configuration cfg,
-                            final List<LayoutModel.Slot> slots, final Set<UUID> hidden,
+    private void fillColumn(final Col col, final int rows, final boolean separator,
+                            final Configuration cfg,
+                            final List<LayoutModel.Slot> slots,
                             final List<LayoutModel.ColumnDesc> colDescs) {
-        int remaining = rows;
         final List<LayoutModel.SectionDesc> sds = new ArrayList<>();
-        for (int i = 0; i < col.size(); i++) {
-            final Sec sec = col.get(i);
-            if (remaining <= 0 && !allowExceed) {
-                // 截断模式下容量耗尽：整节藏（极端情况，自适应行数下很少走到）
-                for (final Player p : sec.players) {
-                    hidden.add(p.getUniqueId());
-                }
-                sds.add(new LayoutModel.SectionDesc(sec.server, sec.display, sec.count(), 0, sec.count()));
-                continue;
-            }
+        int placed = 0;
+        for (int i = 0; i < col.parts().size(); i++) {
+            final Part part = col.parts().get(i);
+            final Sec sec = part.sec();
+            // 列头：#count# 恒为该子服总人数（续列的列头也一样，"列名不变"）
             slots.add(new LayoutModel.Slot(null, textComponent(cfg.headerFormat()
                     .replace("#name#", sec.display)
                     .replace("#count#", String.valueOf(sec.count())))));
-            if (remaining > 0) {
-                remaining--;
-            }
-            final int capacity = Math.max(0, remaining);
-            final int shown;
-            if (allowExceed || sec.count() <= capacity) {
-                shown = sec.count();
-            } else {
-                shown = Math.max(0, capacity - 1); // 留一格给「…及N人」
-            }
-            for (int k = 0; k < shown; k++) {
+            placed++;
+            for (int k = part.from(); k < part.to(); k++) {
                 slots.add(new LayoutModel.Slot(sec.players.get(k).getUniqueId(), null));
+                placed++;
             }
-            final int hiddenCount = sec.count() - shown;
-            if (hiddenCount > 0 && !allowExceed) {
-                if (capacity >= 1) {
-                    slots.add(new LayoutModel.Slot(null, textComponent(cfg.overflowFormat()
-                            .replace("#count#", String.valueOf(hiddenCount)))));
-                }
-                for (int k = shown; k < sec.count(); k++) {
-                    hidden.add(sec.players.get(k).getUniqueId());
-                }
-                remaining = 0; // 本节已把列吃满，后面的分节只能整节藏
-            } else {
-                remaining -= shown;
-            }
-            sds.add(new LayoutModel.SectionDesc(sec.server, sec.display, sec.count(), shown, hiddenCount));
-            if (i < col.size() - 1 && (remaining > 0 || allowExceed) && cfg.separator()) {
+            sds.add(new LayoutModel.SectionDesc(sec.server, sec.display, sec.count(),
+                    part.to() - part.from(), part.part(), part.parts()));
+            if (i < col.parts().size() - 1 && separator) {
                 slots.add(new LayoutModel.Slot(null, Component.empty()));
-                if (remaining > 0) {
-                    remaining--;
-                }
+                placed++;
             }
         }
-        // 假人补满到整列高度
-        while (remaining > 0) {
+        // 假人补满到整列高度（placed > rows 只会发生在共享列溢出，那时不补）
+        for (int i = placed; i < rows; i++) {
             slots.add(new LayoutModel.Slot(null, Component.empty()));
-            remaining--;
         }
         colDescs.add(new LayoutModel.ColumnDesc(sds));
     }
@@ -419,6 +458,37 @@ final class LayoutManager {
 
         int count() {
             return players.size();
+        }
+    }
+
+    /** 某一列里的一个分节片段：sec 的 [from, to) 这些人，第 part/parts 段。 */
+    private record Part(Sec sec, int from, int to, int part, int parts) {
+    }
+
+    /**
+     * 一次分配的结果。
+     *
+     * @param cols       物理列（左右顺序 = 人数降序，共享列在尾部）
+     * @param ownCount   有几个子服拿到了独占列（k）
+     * @param separator  这一趟实际有没有用分节空行
+     * @param fitted     有没有塞进 max-columns（false = 列数溢出了，行数守住）
+     */
+    private record Plan(List<Col> cols, int ownCount, boolean separator, boolean fitted) {
+    }
+
+    /** 一个物理列：一个片段（独占/续列）或多个片段（共享列）。 */
+    private record Col(List<Part> parts) {
+
+        /** 内容高度 = 每段（列头 + 人）+ 段间空行。 */
+        int height(final boolean separator) {
+            int h = 0;
+            for (final Part p : parts) {
+                h += 1 + (p.to() - p.from());
+            }
+            if (separator && parts.size() > 1) {
+                h += parts.size() - 1;
+            }
+            return h;
         }
     }
 }

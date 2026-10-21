@@ -54,7 +54,7 @@ final class FlatManager {
                     setOrder(entry, 0); // 不排序：回到原版顺序
                 }
                 if (!entry.isListed()) {
-                    setListed(entry, true); // 从 layout 截断里恢复
+                    setListed(entry, true); // 把 layout 藏起来的（连接中）恢复可见
                 }
                 final Component want = names.get(p.getUniqueId());
                 if (want != null && !Objects.equals(entry.getDisplayNameComponent().orElse(null), want)) {

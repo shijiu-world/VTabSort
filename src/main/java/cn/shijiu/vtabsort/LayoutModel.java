@@ -26,21 +26,32 @@ final class LayoutModel {
         }
     }
 
-    /** /vts layout 打印用的分节描述。 */
+    /**
+     * /vts layout 打印用的分节描述。
+     *
+     * <p>v3 没有截断了（装不下就续开一列），所以不再有 shown/hidden；
+     * 一个子服横跨多列时每列一条 SectionDesc，用 part/parts 标第几段。
+     */
     static final class SectionDesc {
         final String server;
         final String display;
+        /** 该子服的总人数（列头显示的也是这个数，分段不变）。 */
         final int count;
-        final int shown;
-        final int hidden;
+        /** 本列实际放了多少人。 */
+        final int here;
+        /** 第几段（1 起）。 */
+        final int part;
+        /** 一共分了几段（1 = 没分段）。 */
+        final int parts;
 
         SectionDesc(final String server, final String display, final int count,
-                    final int shown, final int hidden) {
+                    final int here, final int part, final int parts) {
             this.server = server;
             this.display = display;
             this.count = count;
-            this.shown = shown;
-            this.hidden = hidden;
+            this.here = here;
+            this.part = part;
+            this.parts = parts;
         }
     }
 
@@ -56,20 +67,34 @@ final class LayoutModel {
     final List<Slot> slots;
     /** 可见玩家的目标 listOrder（= 槽位号）。 */
     final Map<UUID, Integer> orders;
-    /** 需要隐藏（listed=false）的玩家：截断溢出的 + 还没进任何服的。 */
+    /** 需要隐藏（listed=false）的玩家：还没进任何服的（连接中）。 */
     final Set<UUID> hidden;
     final List<ColumnDesc> columns;
     /** 本轮网格行数（自适应，可能小于配置的 rows 上限）。 */
     final int rows;
     final int columnCount;
+    /**
+     * 列数超过了 max-columns —— 内容真的塞不进「max 列 × rows 行」时的兜底：
+     * 保行数（客户端硬约束）、让列数溢出。调大 max-columns / rows，
+     * 或者少列几个子服即可消除。
+     */
+    final boolean exceedsColumns;
+    /**
+     * 本轮自动去掉了分节空行（配置是开的）—— 为了让更多子服独占列、
+     * 或者让共享列装得下。
+     */
+    final boolean separatorDropped;
 
     LayoutModel(final List<Slot> slots, final Map<UUID, Integer> orders, final Set<UUID> hidden,
-                final List<ColumnDesc> columns, final int rows) {
+                final List<ColumnDesc> columns, final int rows,
+                final boolean exceedsColumns, final boolean separatorDropped) {
         this.slots = slots;
         this.orders = orders;
         this.hidden = hidden;
         this.columns = columns;
         this.rows = rows;
         this.columnCount = columns.size();
+        this.exceedsColumns = exceedsColumns;
+        this.separatorDropped = separatorDropped;
     }
 }

@@ -22,18 +22,22 @@ import java.util.List;
 import java.util.Locale;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * VTabSort —— Tab 列表展示（Velocity 代理端，零依赖，子服什么都不用装）。
  *
- * <p>两种模式（config.toml 的 [display].mode，reload 即切换）：
+ * <p>三种模式（config.toml 的 [display].mode，reload 即切换）：
  *
  * <ul>
  *   <li><b>layout</b>：Hypixel 式固定网格。每列头顶子服名（在线数可配），
- *       假条目补满空槽；子服数超过 max-columns 时人数最少的并进共享列
- *       （分节按人数降序、分节间空一行）。网格行数自适应：人数最多的
- *       子服几人就是几+1 行（受「客户端开出 N 列的最小行数」约束，上限 rows）。</li>
- *   <li><b>flat</b>：普通列表。名字前缀子服名（格式可配），可选按子服排序。</li>
+ *       假条目补满空槽；列的左右顺序按子服人数降序；一个子服装不下一列
+ *       就续开一列（列头不变）；列预算（max-columns）不够时排在后面的
+ *       小服并进最后一列。网格行数自适应（受「客户端开出 N 列的最小行数」
+ *       约束，目标上限 rows）。</li>
+ *   <li><b>flat</b>：普通列表。名字前缀子服名（格式可配），可选按人数降序排序。</li>
+ *   <li><b>auto</b>：在线人数 ≤ rows（客户端拆第二列的阈值）时按 flat 来，
+ *       超过就按 layout 来 —— 人少的时候不铺一屏假人，人多的时候才上网格。</li>
  * </ul>
  *
  * <p>两条不变式：①不碰 scoreboard team → 后端小游戏藏名字照常；
@@ -47,7 +51,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
         // ⚠️ 版本号必须是编译期常量 —— 走 BuildConstants 间接引过来（templating-maven-plugin 生成）。
         // 🔴 别改回字面量：注解处理器会按这个值重写 velocity-plugin.json。
         version = BuildConstants.VERSION,
-        description = "Tab 展示：layout 固定网格（子服列头 + 假人补位）/ flat 前缀列表；listOrder 协议字段，不碰 scoreboard team。",
+        description = "Tab 展示：layout 固定网格（子服列头 + 假人补位）/ flat 前缀列表 / auto 按人数自适应；listOrder 协议字段，不碰 scoreboard team。",
         authors = {"拾玖世界"}
 )
 public final class VTabSort {
@@ -64,6 +68,12 @@ public final class VTabSort {
     private volatile long lastModified;
     /** 是否已有一个延迟刷新任务在排队（防抖：连发事件只补一发）。 */
     private final AtomicBoolean delayedRefreshPending = new AtomicBoolean(false);
+    /**
+     * 上一轮实际落地的模式（auto 会随在线人数翻面）。null = 还没刷过。
+     * 用它判断「要不要清对家痕迹」，比在 reload 里比配置更准
+     * —— auto 模式下配置没变但落地模式会变。
+     */
+    private final AtomicReference<Configuration.Mode> appliedMode = new AtomicReference<>();
 
     @Inject
     public VTabSort(final ProxyServer proxy, final Logger logger, @DataDirectory final Path dataDirectory) {
@@ -85,11 +95,7 @@ public final class VTabSort {
         registerCommands();
         startAutoReload();
         startReassert();
-        logger.info("[vtabsort] VTabSort 已就绪 —— 模式："
-                + (config.layoutMode()
-                ? "layout 固定网格（列头=子服名，假人补位，行数自适应）"
-                : "flat 普通列表（前缀" + (config.flatSort() ? "+排序" : "") + "）")
-                + "；子服顺序：" + String.join(" > ", config.serverOrder()));
+        logger.info("[vtabsort] VTabSort 已就绪 —— " + describeMode(config));
     }
 
     // ------------------------------------------------------------------
@@ -126,9 +132,25 @@ public final class VTabSort {
         }).delay(delay, TimeUnit.MILLISECONDS).schedule();
     }
 
+    /**
+     * 重算并应用。
+     *
+     * <p>auto 模式每轮都按当前在线人数重新判定落地模式，所以模式可能在
+     * 玩家进出的瞬间翻面 —— 翻面时要先把对家留下的痕迹清掉（假条目 /
+     * 前缀显示名），否则 flat 列表里会残留假人、layout 网格里会残留前缀。
+     */
     private void rebuildNow() {
         final Configuration cfg = config;
-        if (cfg.layoutMode()) {
+        final Configuration.Mode effective = cfg.effectiveMode(proxy.getPlayerCount());
+        final Configuration.Mode previous = appliedMode.getAndSet(effective);
+        if (previous != null && previous != effective) {
+            if (effective == Configuration.Mode.LAYOUT) {
+                flatManager.resetDisplayNames(); // flat→layout：清前缀显示名
+            } else {
+                layoutManager.stripAll();         // layout→flat：拔全部假条目
+            }
+        }
+        if (effective == Configuration.Mode.LAYOUT) {
             layoutManager.applyAll(layoutManager.build(cfg), cfg);
         } else {
             flatManager.applyAll(cfg);
@@ -189,29 +211,45 @@ public final class VTabSort {
     /** 无客户端也能核对布局：把当前网格的分列模型打给命令发起者。 */
     private void printLayout(final CommandSource source) {
         final Configuration cfg = config;
-        if (!cfg.layoutMode()) {
-            send(source, "当前是 flat 模式：排序 " + (cfg.flatSort() ? "开" : "关")
+        final Configuration.Mode effective = cfg.effectiveMode(proxy.getPlayerCount());
+        if (cfg.mode() == Configuration.Mode.AUTO) {
+            send(source, "auto 模式：在线 " + proxy.getPlayerCount() + " 人，阈值 "
+                    + cfg.rows() + " → 当前落地 " + effective.key());
+        }
+        if (effective != Configuration.Mode.LAYOUT) {
+            send(source, "当前是 flat 展示：排序 " + (cfg.flatSort() ? "开" : "关")
                     + "，前缀格式 " + cfg.flatPrefix());
             return;
         }
         final LayoutModel model = layoutManager.build(cfg);
         send(source, "layout 网格：" + model.columnCount + " 列 × " + model.rows
-                + " 行（上限 " + cfg.rows() + "），槽位 " + model.slots.size()
-                + "，隐藏 " + model.hidden.size());
+                + " 行（行数上限 " + cfg.rows() + "，列预算 " + cfg.maxColumns()
+                + (model.exceedsColumns ? "，内容塞不下已超列预算" : "")
+                + (model.separatorDropped ? "，已自动去掉分节空行" : "")
+                + "），槽位 " + model.slots.size() + "，隐藏 " + model.hidden.size());
         for (int i = 0; i < model.columns.size(); i++) {
             final StringBuilder sb = new StringBuilder("列" + (i + 1) + "：");
             for (final LayoutModel.SectionDesc sd : model.columns.get(i).sections) {
                 sb.append(sd.display).append('(').append(sd.count);
-                if (sd.shown != sd.count) {
-                    sb.append(" 显").append(sd.shown);
-                }
-                if (sd.hidden > 0) {
-                    sb.append(" 藏").append(sd.hidden);
+                if (sd.parts > 1) {
+                    sb.append(" 第").append(sd.part).append('/').append(sd.parts)
+                            .append("段 本列").append(sd.here);
                 }
                 sb.append(") ");
             }
             send(source, sb.toString().trim());
         }
+    }
+
+    /** 起服/重载时打的那行模式说明。 */
+    private String describeMode(final Configuration cfg) {
+        return switch (cfg.mode()) {
+            case LAYOUT -> "模式 layout（固定网格，列头=子服名，人数降序分列，超高续列）";
+            case FLAT -> "模式 flat（前缀列表" + (cfg.flatSort() ? "，按人数降序排序" : "，原版顺序") + "）";
+            case AUTO -> "模式 auto（≤" + cfg.rows() + " 人走 flat，超过走 layout）"
+                    + "；当前在线 " + proxy.getPlayerCount() + " → "
+                    + cfg.effectiveMode(proxy.getPlayerCount()).key();
+        };
     }
 
     // ------------------------------------------------------------------
@@ -231,21 +269,12 @@ public final class VTabSort {
             }
             return;
         }
-        final boolean wasLayout = config.layoutMode();
         config = result.config();
         lastModified = configMtime();
-        if (config.layoutMode() != wasLayout) {
-            // 模式切换：先把对家留下的痕迹清干净
-            if (config.layoutMode()) {
-                flatManager.resetDisplayNames(); // flat→layout：清前缀显示名
-            } else {
-                layoutManager.stripAll();         // layout→flat：拔全部假条目
-            }
-        }
+        // 模式切换的清场交给 rebuildNow（它比对的是「上一轮实际落地的模式」，
+        // auto 模式下配置没变也可能翻面，统一在那里处理不会漏）。
         rebuildNow();
-        logger.info("[vtabsort] 配置已加载 —— 模式 "
-                + (config.layoutMode() ? "layout" : "flat")
-                + "；子服顺序：" + String.join(" > ", config.serverOrder()));
+        logger.info("[vtabsort] 配置已加载 —— " + describeMode(config));
         if (feedback != null) {
             send(feedback, config.message("reloaded"));
         }

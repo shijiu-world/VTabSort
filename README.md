@@ -1,34 +1,49 @@
 # VTabSort
 
-Velocity 代理端 Tab 展示插件：**layout 固定网格**（Hypixel 式，列头 = 子服名，假人补位）或 **flat 前缀列表**，两种模式一键切换。
+Velocity 代理端 Tab 展示插件：**layout 固定网格**（Hypixel 式，列头 = 子服名，假人补位）、
+**flat 前缀列表**、**auto 按在线人数自适应**，三种模式一键切换。
 
 ## 为什么会有它
 
 装了 VelocityScoreboardAPI v2 之后 TAB 的 team 排序终于能用，但代价是代理 team 优先级压过后端（小游戏藏不了名字）、team 前后缀清不干净。关掉 `scoreboard-teams` 后 Tab 失去排序。而 MC **1.21.2+** 的 tab 协议本身就有 `listOrder` 字段（客户端原生排序、不经过 scoreboard team），Velocity API 直接支持；现成插件没有一个走这条路（TAB 普通排序/Velocitab 都只用 team；TAB Layout 是写死 80 格的固定网格，列头/分列不可配），所以自研。
 
-## 两种模式（`[display].mode`，`/vts reload` 切换）
+## 三种模式（`[display].mode`，`/vts reload` 切换）
 
 ### layout —— 固定网格
 
 - 每列头顶 = 子服名（`header-format`，默认 `&e子服名 &7· 在线数`）；
-- 子服数超过 `max-columns` 时**自动合并**：人数最多的 (max-1) 个独占列，
-  其余全部进共享列（分节按人数降序、人多的在上、分节间空一行）；
-- **网格行数自适应**：人数最多的子服几人就是几+1 行；下限是「让客户端开出
-  N 列的最小行数」（4 列 ≥ 16 行），上限 `rows`（客户端行数上限，原版 20）。
-  原理：客户端折行规则是 列数=ceil(总条目/rows)、行数=ceil(总条目/列数)，
-  所以总条目恒等于 列数×行数 时渲染出精确网格——空槽用假条目补满；
-- 单列内容超过 `rows` 上限时折叠成「…及N人」（`truncate`，可关＝允许溢出）；
-  所有服都并进一列仍超高时按服主规则允许溢出；
+- **列的左右顺序 = 子服人数降序**（平手按服名升序）。没有「服主排序」这回事了，
+  人多的服永远在左边；
+- **一个子服装不下一列就续开一列**：人数 > `rows-1` 时按列均分（余数给靠前的列），
+  续出来的列紧跟在它后面、**列头文字完全一样**（`#count#` 始终是该服总人数）；
+- 列预算（`max-columns`）不够时，排在后面的小服**并进尾部的共享列**
+  （分节按人数降序、人多的在上、分节间空一行）。共享列也能占多列；
+- 优先让更多子服独占列：分配时从「尽量多独占」往下退，第一个塞得进预算的方案胜出。
+  分节空行是可牺牲的 —— 去掉它能多腾一两行、让更多服独占列时会自动去掉；
+- **网格行数自适应**：取「最高那列的内容高度」与「让客户端开出 N 列的最小行数」
+  （4 列 ≥ 16 行）的较大值。原理：客户端折行规则是
+  列数=ceil(总条目/rows)、行数=ceil(总条目/列数)，所以总条目恒等于 列数×行数
+  时渲染出精确网格——空槽用假条目补满；
+- 内容真的塞不进「`max-columns` 列 × `rows` 行」时：**保行数、让列数溢出**。
+  行数是客户端硬约束（超了会被折成别的形状），列预算只是期望值，两者只能保一个。
+  `/vts layout` 会提示，调大 `max-columns` / `rows` 即可消除；
 - 假条目：确定性 UUID（`nameUUIDFromBytes("vtabsort-slot-N")`）、可配皮肤
   （`default-skin` 填 textures 的 base64）与伪装 ping（`blank-ping`）。
 
 ### flat —— 普通列表
 
 - 名字前缀子服名（`prefix-format`，默认 `&7[&e大厅&7] `）；
-- 可选按子服排序（`[flat].sort`，复用 v1 的优先级×1e6 算法）；
+- 可选排序（`[flat].sort`）：基数 = **子服人数降序排名**，和 layout 的列顺序一致
+  （auto 模式切换时视觉跳动最小）；算法还是优先级×1e6；
 - 空服自然没条目、某服人多自然续行（原版列表的弹性）。
 
-两模式共同点：不碰 scoreboard team（小游戏藏名字照常）、真实玩家条目由 TAB
+### auto —— 自适应
+
+在线人数 **≤ `[layout].rows`**（客户端拆出第二列的阈值，原版 20）时按 flat 来，
+超过就按 layout 来。人少的时候不铺一屏假人，人多的时候才上网格。
+落地模式每次重算都重新判定，翻面时会自动清掉对家的痕迹（假条目 / 前缀显示名）。
+
+三种模式共同点：不碰 scoreboard team（小游戏藏名字照常）、真实玩家条目由 TAB
 global-playerlist 创建本插件只调 `listOrder`/`listed`/显示名。老客户端（<1.21.2）
 自动走原版行为，无害。
 
@@ -36,20 +51,20 @@ global-playerlist 创建本插件只调 `listOrder`/`listed`/显示名。老客�
 
 ```toml
 [display]
-mode = "layout"            # layout | flat
+mode = "layout"            # layout | flat | auto
 
 [layout]
-max-columns = 4
-rows = 20                  # 客户端每列行数上限；实测列数不对就改（如 15）
+max-columns = 4            # 列预算（续列和共享列都算在内）
+rows = 20                  # 客户端每列行数上限，同时是 auto 的切换阈值；实测列数不对就改（如 15）
 header-format = "&e#name# &7· #count#"
+separator = true           # 共享列里分节之间空一行（装不下时会自动放弃）
 
 [flat]
 prefix-format = "&7[&e#name#&7] "
-sort = true
+sort = true                # 按子服人数降序
 
-[servers]
-order = ["lobby", "survival", "survival2", "industry", "starvalley", "minigame", "bedwars", "killer"]
-
+# 这份清单决定「哪些服就算 0 人也要占个列头」（网格稳定）；
+# 没列出但有人在线的服照样显示，用服名原文当显示名。
 [servers.names]
 lobby = "大厅"
 survival = "生存净土"
@@ -57,6 +72,10 @@ survival = "生存净土"
 ```
 
 改完 `/vtabsort reload`（或开 `advanced.auto-reload`）。
+
+> **v2 → v3 删掉的配置**（留着也只是被忽略）：`[servers].order`、`[servers].unknown`
+> （列顺序改成按人数降序算）、`[layout].truncate`、`[layout].overflow-format`
+> （单列装不下改成续开一列，不再折叠成「…及N人」）。
 
 ## 命令
 
@@ -78,7 +97,9 @@ survival = "生存净土"
 - 事件（进代理/切服/退出）→ 全量重算 LayoutModel（纯数据）→ 对每个 viewer
   diff 应用（没变化不发一个包）；`refresh-delay-ms` 延迟补发兜 TAB 建条目竞态，
   `reassert-seconds` 周期校准兜后端 Paper 重置 listOrder / TAB 覆写显示名；
-- flat 排序值 = `子服优先级 × 1_000_000 + 组内序号`（双封顶防溢出）；
+- flat 排序值 = `子服人数降序排名 × 1_000_000 + 组内序号`（双封顶防溢出）；
+- layout 分列是「试 k 退 k」：k = 独占列的子服个数，从最大往下退，
+  第一个塞得进 `max-columns` 的方案胜出；带/不带分节空行各试一趟，取独占更多的那个；
 - 假条目按槽位确定性生成 UUID，跨重算稳定（避免拔了又加的包抖动）；
   网格缩短后按 512 槽位扫描半径清理残留；
 - `Player#getTabList` 是 per-viewer 的：每个在线玩家的 TabList 都要设一遍；

@@ -7,21 +7,42 @@ import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
-import java.util.ArrayList;
 import java.util.LinkedHashMap;
-import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 import java.util.TreeMap;
 
 /**
- * config.toml 的读取与校验（v2：display/layout/flat/servers.names）。
+ * config.toml 的读取与校验（v3：display/layout/flat/servers.names）。
  *
  * <p>铁律：**读失败的时候保留上一次的配置**，绝不让插件变成半成品。
  * 所有取值都带默认值，{@link #load} 出错时返回 error 而不是 null 之后裸奔。
  * 缺行/写歪的键走默认值（fallback 要留），但不做旧版配置迁移（服主定的规矩）。
+ *
+ * <p>v3 删掉的键（读到也忽略）：{@code [servers].order}、{@code [servers].unknown}
+ * （列顺序改成按人数降序，不再由服主排）、{@code [layout].truncate}、
+ * {@code [layout].overflow-format}（单列装不下改成续开一列，不再折叠）。
  */
 public final class Configuration {
+
+    /** 展示模式。auto = 按在线人数在 flat / layout 之间自己切。 */
+    public enum Mode {
+        LAYOUT, FLAT, AUTO;
+
+        static Mode parse(final String raw) {
+            final String s = raw == null ? "" : raw.trim().toLowerCase(Locale.ROOT);
+            return switch (s) {
+                case "flat" -> FLAT;
+                case "auto" -> AUTO;
+                default -> LAYOUT; // 写歪了回 layout
+            };
+        }
+
+        public String key() {
+            return name().toLowerCase(Locale.ROOT);
+        }
+    }
 
     /** 加载结果：config 可能为旧的（出错时），error 不为空说明这次没能读成。 */
     public static final class LoadResult {
@@ -42,20 +63,16 @@ public final class Configuration {
         }
     }
 
-    private final boolean layoutMode;
+    private final Mode mode;
     private final int maxColumns;
     private final int rows;
     private final String headerFormat;
     private final boolean separator;
-    private final boolean truncate;
-    private final String overflowFormat;
     private final int blankPing;
     private final String defaultSkin;
     private final String flatPrefix;
     private final boolean flatSort;
-    private final List<String> serverOrder;
     private final Map<String, String> serverNames;
-    private final boolean unknownFirst;
     private final boolean sameServerByJoin;
     private final Map<String, String> messages;
     private final boolean autoReload;
@@ -63,29 +80,25 @@ public final class Configuration {
     private final int refreshDelayMs;
     private final int reassertSeconds;
 
-    private Configuration(final boolean layoutMode, final int maxColumns, final int rows,
-                          final String headerFormat, final boolean separator, final boolean truncate,
-                          final String overflowFormat, final int blankPing, final String defaultSkin,
+    private Configuration(final Mode mode, final int maxColumns, final int rows,
+                          final String headerFormat, final boolean separator,
+                          final int blankPing, final String defaultSkin,
                           final String flatPrefix, final boolean flatSort,
-                          final List<String> serverOrder, final Map<String, String> serverNames,
-                          final boolean unknownFirst, final boolean sameServerByJoin,
+                          final Map<String, String> serverNames,
+                          final boolean sameServerByJoin,
                           final Map<String, String> messages,
                           final boolean autoReload, final int autoReloadIntervalSeconds,
                           final int refreshDelayMs, final int reassertSeconds) {
-        this.layoutMode = layoutMode;
+        this.mode = mode;
         this.maxColumns = maxColumns;
         this.rows = rows;
         this.headerFormat = headerFormat;
         this.separator = separator;
-        this.truncate = truncate;
-        this.overflowFormat = overflowFormat;
         this.blankPing = blankPing;
         this.defaultSkin = defaultSkin;
         this.flatPrefix = flatPrefix;
         this.flatSort = flatSort;
-        this.serverOrder = serverOrder;
         this.serverNames = serverNames;
-        this.unknownFirst = unknownFirst;
         this.sameServerByJoin = sameServerByJoin;
         this.messages = messages;
         this.autoReload = autoReload;
@@ -95,15 +108,6 @@ public final class Configuration {
     }
 
     public static Configuration defaults() {
-        final List<String> order = new ArrayList<>();
-        order.add("lobby");
-        order.add("survival");
-        order.add("survival2");
-        order.add("industry");
-        order.add("starvalley");
-        order.add("minigame");
-        order.add("bedwars");
-        order.add("killer");
         final Map<String, String> names = new TreeMap<>();
         names.put("lobby", "大厅");
         names.put("survival", "生存净土");
@@ -118,17 +122,30 @@ public final class Configuration {
         messages.put("reload-failed", "配置加载失败，用的还是旧配置，原因：#reason#");
         messages.put("no-permission", "你没有权限这么做");
         messages.put("usage", "用法：/vtabsort reload | layout | version");
-        return new Configuration(true, 4, 20,
-                "&e#name# &7· #count#", true, true,
-                "&8…及 #count# 人", 0, "",
+        return new Configuration(Mode.LAYOUT, 4, 20,
+                "&e#name# &7· #count#", true,
+                0, "",
                 "&7[&e#name#&7] ", true,
-                order, names, false, false, messages,
+                names, false, messages,
                 false, 3, 200, 3);
     }
 
-    /** true = layout 固定网格模式；false = flat 普通列表模式。 */
-    public boolean layoutMode() {
-        return layoutMode;
+    /** 配置里写的模式（可能是 auto）。 */
+    public Mode mode() {
+        return mode;
+    }
+
+    /**
+     * auto 模式的落地：在线人数 ≤ rows（客户端拆第二列的阈值）走 flat，
+     * 超了走 layout。非 auto 模式原样返回。
+     *
+     * @param onlineCount 当前在线人数（含还在连接中的）
+     */
+    public Mode effectiveMode(final int onlineCount) {
+        if (mode != Mode.AUTO) {
+            return mode;
+        }
+        return onlineCount <= rows ? Mode.FLAT : Mode.LAYOUT;
     }
 
     public int maxColumns() {
@@ -148,14 +165,6 @@ public final class Configuration {
         return separator;
     }
 
-    public boolean truncate() {
-        return truncate;
-    }
-
-    public String overflowFormat() {
-        return overflowFormat;
-    }
-
     public int blankPing() {
         return blankPing;
     }
@@ -172,18 +181,19 @@ public final class Configuration {
         return flatSort;
     }
 
-    /** 子服优先级（全部已转小写）。 */
-    public List<String> serverOrder() {
-        return serverOrder;
-    }
-
     /** 子服显示名（键已转小写）；没配的用服名原文。 */
     public String serverDisplayName(final String server) {
         return serverNames.getOrDefault(server, server);
     }
 
-    public boolean unknownFirst() {
-        return unknownFirst;
+    /**
+     * [servers.names] 里列出的服名（已转小写，按名字升序）。
+     *
+     * <p>v3 没有 order 了，这份清单只决定「哪些服就算 0 人也要占个分节」
+     * （让网格在空服时也稳定）；列的左右顺序一律按人数降序算。
+     */
+    public Set<String> knownServers() {
+        return serverNames.keySet();
     }
 
     public boolean sameServerByJoin() {
@@ -242,33 +252,19 @@ public final class Configuration {
     }
 
     private static Configuration fromMap(final Map<String, Object> raw) {
-        final String mode = TomlLite.string(raw, "display.mode", "layout").trim();
-        final boolean layoutMode = !"flat".equalsIgnoreCase(mode); // 只有 flat 精确匹配才走 flat，写歪了回 layout
+        final Mode mode = Mode.parse(TomlLite.string(raw, "display.mode", "layout"));
 
         final int maxColumns = (int) clamp(TomlLite.integer(raw, "layout.max-columns", 4), 1, 10);
         final int rows = (int) clamp(TomlLite.integer(raw, "layout.rows", 20), 5, 40);
         final String headerFormat = TomlLite.string(raw, "layout.header-format",
                 defaults().headerFormat());
         final boolean separator = TomlLite.bool(raw, "layout.separator", true);
-        final boolean truncate = TomlLite.bool(raw, "layout.truncate", true);
-        final String overflowFormat = TomlLite.string(raw, "layout.overflow-format",
-                defaults().overflowFormat());
         final int blankPing = (int) clamp(TomlLite.integer(raw, "layout.blank-ping", 0), 0, 60_000);
         final String defaultSkin = TomlLite.string(raw, "layout.default-skin", "").trim();
 
         final String flatPrefix = TomlLite.string(raw, "flat.prefix-format", defaults().flatPrefix());
         final boolean flatSort = TomlLite.bool(raw, "flat.sort", true);
 
-        final List<String> order = TomlLite.lowercase(
-                TomlLite.list(raw, "servers.order", defaults().serverOrder()));
-        final List<String> dedup = new ArrayList<>();
-        for (final String s : order) {
-            if (!s.isEmpty() && !dedup.contains(s)) {
-                dedup.add(s);
-            }
-        }
-        final boolean unknownFirst = "before".equalsIgnoreCase(
-                TomlLite.string(raw, "servers.unknown", "after").trim());
         final boolean byJoin = "join".equalsIgnoreCase(
                 TomlLite.string(raw, "general.same-server-order", "name").trim());
 
@@ -296,9 +292,9 @@ public final class Configuration {
         final int delay = (int) clamp(TomlLite.integer(raw, "advanced.refresh-delay-ms", 200), 0, 10_000);
         final int reassert = (int) clamp(TomlLite.integer(raw, "advanced.reassert-seconds", 3), 0, 60);
 
-        return new Configuration(layoutMode, maxColumns, rows, headerFormat, separator, truncate,
-                overflowFormat, blankPing, defaultSkin, flatPrefix, flatSort,
-                dedup, names, unknownFirst, byJoin, messages,
+        return new Configuration(mode, maxColumns, rows, headerFormat, separator,
+                blankPing, defaultSkin, flatPrefix, flatSort,
+                names, byJoin, messages,
                 autoReload, interval, delay, reassert);
     }
 
