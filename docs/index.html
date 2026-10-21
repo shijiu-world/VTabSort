@@ -1,0 +1,616 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>VTabSort 预览 · Tab 玩家列表模拟器</title>
+<style>
+:root{
+  --mcfont:'Minecraft','Minecraftia','VT323','Press Start 2P',ui-monospace,'DejaVu Sans Mono','Courier New',monospace;
+  --ui:system-ui,-apple-system,'Segoe UI','Noto Sans SC','Microsoft YaHei',sans-serif;
+  --pnl:#222228;--pnl2:#2b2b33;--line:#3a3a45;--txt:#dcdce2;--dim:#9a9aa6;
+}
+*{box-sizing:border-box}
+html,body{height:100%}
+body{margin:0;display:grid;grid-template-columns:minmax(0,1fr) 380px;
+  background:#15151a;color:var(--txt);font:13px/1.5 var(--ui);overflow:hidden}
+
+/* ---------- 左：MC 场景 ---------- */
+.stage{position:relative;overflow:auto;padding:26px 18px 40px;
+  background:
+    linear-gradient(#5c8fe0 0%,#8fb8f0 42%,#cfe3f7 58%,#cfe3f7 60%,#6ba544 60%,#5a8f3a 66%,#7a5733 66%,#6b4a2b 100%);}
+.stage::before{content:'';position:absolute;inset:0;pointer-events:none;
+  background:
+    repeating-linear-gradient(90deg,rgba(255,255,255,.06) 0 16px,transparent 16px 32px),
+    radial-gradient(120% 70% at 50% 0,transparent 40%,rgba(0,0,0,.35) 100%);}
+.stage-in{position:relative;display:flex;flex-direction:column;align-items:center;gap:14px;min-height:100%}
+.hint{font:11px/1.6 var(--ui);color:#eef;background:rgba(0,0,0,.45);padding:4px 10px;border-radius:3px}
+
+/* ---------- Tab 列表（MC 风格） ---------- */
+.tablist{background:rgba(0,0,0,.5);padding:2px;display:inline-flex;flex-direction:column;align-items:center;gap:2px}
+.tl-head,.tl-foot{font:14px/1.35 var(--mcfont);color:#fff;text-align:center;padding:3px 10px;white-space:pre-wrap}
+.grid{display:flex;gap:1px;align-items:flex-start}
+.col{display:flex;flex-direction:column;gap:1px}
+.entry{display:flex;align-items:center;gap:5px;height:19px;padding:0 5px 0 1px;
+  background:rgba(255,255,255,.14);min-width:168px;position:relative}
+.entry.fake{background:rgba(255,255,255,.09)}
+.entry.hdr{background:rgba(255,255,255,.2)}
+.entry.pl{cursor:pointer}
+.entry.pl:hover{background:rgba(255,80,80,.38)}
+.entry.pl:hover .nm::after{content:' ✕';color:#ffb3b3}
+.head{width:17px;height:17px;flex:0 0 17px;image-rendering:pixelated;border-radius:1px}
+.nm{font:13px/1 var(--mcfont);white-space:nowrap;flex:1 1 auto;letter-spacing:.2px}
+.ping{display:flex;align-items:flex-end;gap:1px;height:9px;flex:0 0 auto;margin-left:6px}
+.ping i{width:2px;background:#3fd64f;display:block}
+.ping i.off{background:rgba(255,255,255,.22)}
+@keyframes flash{0%{box-shadow:inset 0 0 0 2px #fff;background:rgba(120,255,120,.5)}100%{box-shadow:none}}
+.entry.flash{animation:flash .9s ease-out}
+.obf{display:inline-block}
+</style>
+<style>
+/* ---------- 右：配置面板 ---------- */
+.panel{background:var(--pnl);border-left:1px solid var(--line);overflow-y:auto;padding:0 0 30px}
+.panel h1{margin:0;padding:12px 14px;font-size:14px;letter-spacing:.5px;border-bottom:1px solid var(--line);
+  background:var(--pnl2);position:sticky;top:0;z-index:5}
+.panel h1 small{display:block;color:var(--dim);font-weight:400;font-size:11px;letter-spacing:0;margin-top:2px}
+section{border-bottom:1px solid var(--line);padding:11px 14px}
+section>h2{margin:0 0 9px;font-size:11px;color:#8ab4ff;letter-spacing:1.2px;text-transform:uppercase;font-weight:600}
+.row{display:flex;align-items:center;gap:8px;margin-bottom:7px}
+.row>label{flex:0 0 108px;color:var(--dim);font-size:12px}
+.row>label.wide{flex:0 0 136px}
+input[type=text],input[type=number],select{flex:1 1 auto;min-width:0;background:#15151a;color:var(--txt);
+  border:1px solid var(--line);border-radius:3px;padding:4px 6px;font:12px var(--ui)}
+input[type=text]{font-family:ui-monospace,monospace}
+input[type=range]{flex:1 1 auto;min-width:0;accent-color:#8ab4ff}
+input:focus,select:focus{outline:1px solid #8ab4ff;outline-offset:-1px}
+.val{flex:0 0 34px;text-align:right;font-variant-numeric:tabular-nums;color:#8ab4ff;font-size:12px}
+label.cb{display:flex;align-items:center;gap:6px;cursor:pointer;font-size:12px;color:var(--txt);flex:1 1 auto}
+label.cb input{accent-color:#8ab4ff}
+
+/* MC 风按钮 */
+button{font:12px var(--ui);color:#fff;background:#6e6e6e;border:0;box-shadow:inset -2px -2px 0 #3f3f3f,inset 2px 2px 0 #9d9d9d;
+  padding:5px 9px;cursor:pointer;letter-spacing:.3px}
+button:hover{background:#7e8ea0;box-shadow:inset -2px -2px 0 #47525e,inset 2px 2px 0 #a9b8c8}
+button:active{box-shadow:inset 2px 2px 0 #3f3f3f,inset -2px -2px 0 #9d9d9d}
+button.sm{padding:2px 7px;font-size:12px;min-width:24px}
+button.on{background:#4a7a3a;box-shadow:inset -2px -2px 0 #2d4a24,inset 2px 2px 0 #6fa85a}
+.btns{display:flex;flex-wrap:wrap;gap:6px}
+
+/* 子服行 */
+.srv{display:flex;align-items:center;gap:5px;padding:5px 6px;margin-bottom:5px;background:var(--pnl2);
+  border:1px solid var(--line);border-radius:3px}
+.srv .rk{flex:0 0 22px;font:11px ui-monospace,monospace;color:#8ab4ff}
+.srv .key{flex:0 0 58px;font:11px ui-monospace,monospace;color:var(--dim);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.srv .dn{flex:1 1 auto;min-width:0;background:#15151a;color:var(--txt);border:1px solid var(--line);
+  border-radius:2px;padding:3px 5px;font:12px var(--ui)}
+.srv .ct{flex:0 0 30px;text-align:center;font-variant-numeric:tabular-nums;color:#ffd866;font-size:12px}
+.srv .del{background:#8a3b3b;box-shadow:inset -2px -2px 0 #5c2525,inset 2px 2px 0 #b35a5a}
+.srv .del:hover{background:#a84646}
+.addsrv{display:flex;gap:5px;margin-top:7px}
+.addsrv input{flex:1 1 auto;min-width:0}
+
+/* 诊断 */
+.diag{font:11px/1.8 ui-monospace,monospace;color:var(--dim)}
+.diag b{color:var(--txt);font-weight:400}
+.diag .ok{color:#6fd36f}.diag .bad{color:#ff8080}
+pre.model{margin:8px 0 0;padding:8px;background:#15151a;border:1px solid var(--line);border-radius:3px;
+  font:11px/1.6 ui-monospace,monospace;color:#b9b9c4;max-height:190px;overflow:auto;white-space:pre}
+.note{color:var(--dim);font-size:11px;line-height:1.6;margin:6px 0 0}
+</style>
+</head>
+<body>
+<main class="stage">
+  <div class="stage-in">
+    <div class="hint">按住 Tab 的效果 · 点玩家条目 = 该玩家退出 · 右侧可改配置 / 加退玩家</div>
+    <div class="tablist" id="tablist"></div>
+  </div>
+</main>
+
+<aside class="panel">
+  <h1>VTabSort 模拟器<small>layout 网格 / flat 前缀 / auto 自适应 · 纯前端复刻 LayoutManager v3</small></h1>
+
+  <section>
+    <h2>display</h2>
+    <div class="row"><label>mode</label>
+      <select id="mode">
+        <option value="layout">layout（固定网格）</option>
+        <option value="flat">flat（前缀列表）</option>
+        <option value="auto">auto（自适应）</option>
+      </select>
+    </div>
+    <p class="note" id="autoNote" style="display:none">auto：在线 ≤ rows 时按 flat，超过按 layout。</p>
+  </section>
+
+  <section id="sec-layout">
+    <h2>layout</h2>
+    <div class="row"><label>max-columns</label><input type="range" id="maxCols" min="1" max="10" value="4"><span class="val" id="maxColsV">4</span></div>
+    <div class="row"><label>rows（上限）</label><input type="range" id="rows" min="5" max="40" value="20"><span class="val" id="rowsV">20</span></div>
+    <div class="row"><label>header-format</label><input type="text" id="hdrFmt" value="&amp;e#name# &amp;7· #count#"></div>
+    <div class="row"><label class="cb"><input type="checkbox" id="sep" checked>separator（共享列分节空行）</label></div>
+    <div class="row"><label>blank-ping</label><input type="number" id="blankPing" min="0" max="60000" value="0"></div>
+    <p class="note">列顺序 = 人数降序；一个服超过 rows-1 人就续开一列（列头不变）；
+      列预算用完后小服并进最后一列。</p>
+  </section>
+
+  <section id="sec-flat" style="display:none">
+    <h2>flat</h2>
+    <div class="row"><label>prefix-format</label><input type="text" id="preFmt" value="&amp;7[&amp;e#name#&amp;7] "></div>
+    <div class="row"><label class="cb"><input type="checkbox" id="flatSort" checked>sort（按子服排序）</label></div>
+  </section>
+
+  <section>
+    <h2>servers.names · 点 + / − 模拟加入退出</h2>
+    <div id="srvList"></div>
+    <div class="addsrv">
+      <input type="text" id="newSrv" placeholder="服名 key（如 skyblock）">
+      <button id="addSrv">＋ 子服</button>
+    </div>
+    <div class="row" style="margin:9px 0 0">
+      <label class="wide">连接中（未进服）</label>
+      <button class="sm" id="cxMinus">−</button><span class="val" id="cxV">0</span><button class="sm" id="cxPlus">＋</button>
+    </div>
+    <p class="note">连接中的玩家会被 <code>listed=false</code> 隐藏，不进网格。</p>
+  </section>
+
+  <section>
+    <h2>批量</h2>
+    <div class="btns">
+      <button id="rnd10">随机 +10 人</button>
+      <button id="rnd1">随机 +1 人</button>
+      <button id="kick1">随机 −1 人</button>
+      <button id="clr">清空玩家</button>
+      <button id="preset">恢复默认示例</button>
+    </div>
+  </section>
+
+  <section>
+    <h2>诊断</h2>
+    <div class="diag">
+      <div>落地模式：<b id="dEff">-</b></div>
+      <div>插件模型：<b id="dModel">-</b> ＝ <b id="dSlots">-</b> 槽</div>
+      <div>客户端折行：<b id="dClient">-</b> <span id="dMatch"></span></div>
+      <div>在线 <b id="dOnline">-</b> · 可见 <b id="dVisible">-</b> · 隐藏 <b id="dHidden">-</b> · 假条目 <b id="dFake">-</b></div>
+    </div>
+    <pre class="model" id="dDump"></pre>
+    <p class="note">折行规则：列数 = ceil(总条目 ÷ rows)，行数 = ceil(总条目 ÷ 列数)。两者一致才渲染出精确网格。
+      子服列表按人数降序排，列顺序跟着变 —— 加退玩家时能看到列整体换位。</p>
+  </section>
+</aside>
+
+<script>
+/* ============ MC 颜色 ============ */
+const MC = {'0':'#000000','1':'#0000AA','2':'#00AA00','3':'#00AAAA','4':'#AA0000','5':'#AA00AA',
+  '6':'#FFAA00','7':'#AAAAAA','8':'#555555','9':'#5555FF','a':'#55FF55','b':'#55FFFF',
+  'c':'#FF5555','d':'#FF55FF','e':'#FFFF55','f':'#FFFFFF'};
+const esc = s => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const shadow = hex => { // MC 文字阴影 = 颜色 × 0.25
+  const n = parseInt(hex.slice(1),16);
+  const f = v => Math.floor(v/4).toString(16).padStart(2,'0');
+  return '#'+f(n>>16&255)+f(n>>8&255)+f(n&255);
+};
+/* 复刻 Colors.java：&0-&f / &k&l&m&n&o / &r / &#RRGGBB，不认的 & 原样留 */
+function legacy(input){
+  if(!input) return '';
+  let out='',buf='',color=null,deco={k:0,l:0,m:0,n:0,o:0};
+  const flush=()=>{
+    if(!buf) return;
+    const c=color||'#FFFFFF';
+    let st=`color:${c};text-shadow:1px 1px 0 ${shadow(c)}`;
+    if(deco.l) st+=';font-weight:700';
+    if(deco.o) st+=';font-style:italic';
+    if(deco.m||deco.n) st+=`;text-decoration:${[deco.m&&'line-through',deco.n&&'underline'].filter(Boolean).join(' ')}`;
+    out+=`<span class="${deco.k?'obf':''}" style="${st}">${esc(buf)}</span>`;
+    buf='';
+  };
+  for(let i=0;i<input.length;i++){
+    const ch=input[i];
+    if(ch!=='&'||i+1>=input.length){buf+=ch;continue}
+    const code=input[i+1].toLowerCase();
+    if(code==='#'&&/^[0-9a-f]{6}$/i.test(input.substr(i+2,6))){
+      flush();color='#'+input.substr(i+2,6);deco={k:0,l:0,m:0,n:0,o:0};i+=7;continue;
+    }
+    if(MC[code]){flush();color=MC[code];deco={k:0,l:0,m:0,n:0,o:0};i++;continue}
+    if('klmno'.includes(code)){flush();deco[code]=1;i++;continue}
+    if(code==='r'){flush();color=null;deco={k:0,l:0,m:0,n:0,o:0};i++;continue}
+    buf+=ch;
+  }
+  flush();
+  return out;
+}
+const plain = t => `<span style="color:#fff;text-shadow:1px 1px 0 #3f3f3f">${esc(t)}</span>`;
+</script>
+<script>
+/* ============ 头像：按名字确定性生成的像素头 ============ */
+const SKIN = ['#8d5524','#c68642','#e0ac69','#f1c27d','#6b4a2b','#a0522d','#5c4033','#d2a679'];
+function head(name, fake){
+  if(fake) return 'data:image/svg+xml;utf8,'+encodeURIComponent(
+    `<svg xmlns="http://www.w3.org/2000/svg" width="8" height="8"><rect width="8" height="8" fill="#3a3a3a"/></svg>`);
+  let h=0; for(const c of name) h=(h*31+c.charCodeAt(0))>>>0;
+  const skin=SKIN[h%SKIN.length], hair=`hsl(${h%360} 45% ${18+h%18}%)`;
+  let px='';
+  for(let y=0;y<8;y++) for(let x=0;x<8;x++){
+    const edge=y<2||x===0||x===7;
+    let f=edge?hair:skin;
+    if(y>=3&&y<=4&&(x===2||x===5)) f='#2b2b3d';           // 眼睛
+    if(y===6&&x>=3&&x<=4) f='#6b3f30';                     // 嘴
+    if(((h>>(x+y))&1)&&y<3&&!edge) f=hair;
+    px+=`<rect x="${x}" y="${y}" width="1" height="1" fill="${f}"/>`;
+  }
+  return 'data:image/svg+xml;utf8,'+encodeURIComponent(
+    `<svg xmlns="http://www.w3.org/2000/svg" width="8" height="8" shape-rendering="crispEdges">${px}</svg>`);
+}
+function pingBars(ms){
+  const lv = ms<0?0:ms<150?5:ms<300?4:ms<600?3:ms<1000?2:1;
+  let h='';
+  for(let i=1;i<=5;i++) h+=`<i class="${i<=lv?'':'off'}" style="height:${i*2-1}px"></i>`;
+  return `<span class="ping">${h}</span>`;
+}
+
+/* ============ 状态 ============ */
+const NAMES=['Steve','Alex','Notch','Herobrine','Dinnerbone','Grumm','jeb_','Dream','Technoblade',
+ '小明','阿狸','旅行者','石九','MoonLight','Pigman','Creeper','Enderman','Zombie','Skeleton','Witch',
+ '苦力怕','末影人','史蒂夫','爱丽克斯','KxTic','Nebula','Quartz','Obsidian','Redstone','Lapis',
+ 'Diamond','Netherite','Blaze','Ghast','Shulker','Allay','Warden','Axolotl','Frog','Camel'];
+let seq=0, usedNames=new Set();
+function newPlayer(){
+  let base, n=0;
+  do{ base=NAMES[Math.floor(Math.random()*NAMES.length)]; n++; }while(usedNames.has(base)&&n<60);
+  let name=base, k=2;
+  while(usedNames.has(name)) name=base+k++;
+  usedNames.add(name);
+  return {uuid:'p'+(++seq), name, ping:[12,24,47,80,120,180,260,420,700][Math.floor(Math.random()*9)], joinSeq:++seq};
+}
+const S={
+  mode:'layout', maxCols:4, rows:20, sep:true, blankPing:0,
+  hdrFmt:'&e#name# &7· #count#',
+  preFmt:'&7[&e#name#&7] ', flatSort:true,
+  servers:[], connecting:[]
+};
+/** 在线人数（含连接中）—— auto 模式的判定依据。 */
+const onlineCount = () => S.servers.reduce((a,s)=>a+s.players.length,0)+S.connecting.length;
+/** auto 落地：≤ rows 走 flat，超了走 layout。 */
+const effectiveMode = () => S.mode!=='auto' ? S.mode : (onlineCount()<=S.rows ? 'flat' : 'layout');
+const DEFAULT_SERVERS=[['lobby','大厅',9],['survival','生存净土',12],['survival2','生存乐土',5],
+  ['industry','工业基地',7],['starvalley','星露谷',3],['minigame','电玩中心',4],
+  ['bedwars','起床战争',2],['killer','限时游戏',1]];
+function loadPreset(){
+  usedNames=new Set(); seq=0;
+  S.servers=DEFAULT_SERVERS.map(([key,display,n])=>({key,display,players:Array.from({length:n},newPlayer)}));
+  S.connecting=[];
+}
+
+/* ============ 复刻 LayoutManager.build（v3） ============ */
+const H=(t)=>({kind:'hdr',text:t}), BLANK={kind:'blank'};
+function fill(t,k,v){ return t.split('#'+k+'#').join(v); }
+
+/** n 个人按每列 perColumn 个要几列（至少 1，空服也要有列头）。 */
+const need=(n,perColumn)=>Math.max(1,Math.ceil(n/perColumn)||1);
+
+/** 一个子服摊成 n 列：人数均分（余数给前面的列）。 */
+function spill(sec,n){
+  const out=[], base=Math.floor(sec.players.length/n), rem=sec.players.length%n;
+  let at=0;
+  for(let i=0;i<n;i++){
+    const take=base+(i<rem?1:0);
+    out.push({parts:[{sec,from:at,to:at+take,part:i+1,parts:n}]});
+    at+=take;
+  }
+  return out;
+}
+
+const colHeight=(col,sep)=>col.parts.reduce((a,p)=>a+1+(p.to-p.from),0)
+  + (sep&&col.parts.length>1 ? col.parts.length-1 : 0);
+const whole=(sec)=>({sec,from:0,to:sec.players.length,part:1,parts:1});
+
+/** 共享的子服按顺序装列，每列 ≤ cap 行；自己就超一列的服先自己续列。 */
+function packShared(shared,cap,sep){
+  const per=Math.max(1,cap-1), cols=[];
+  let cur=[];
+  for(const s of shared){
+    if(s.players.length>per){
+      if(cur.length){ cols.push({parts:cur}); cur=[]; }
+      cols.push(...spill(s,need(s.players.length,per)));
+      continue;
+    }
+    const next=[...cur,whole(s)];
+    if(cur.length&&colHeight({parts:next},sep)>cap){ cols.push({parts:cur}); cur=[whole(s)]; }
+    else cur=next;
+  }
+  if(cur.length) cols.push({parts:cur});
+  return cols;
+}
+
+/**
+ * 一趟分配：前 k 个子服独占列（人多的自己续列），其余并进尾部共享列。
+ * k 从大到小试，第一个能塞进 max 列的就是答案；全塞不下 → k=0 兜底
+ * （守住行数上限，让列数溢出 —— 行数是客户端硬约束）。
+ */
+function tryAllocate(secs,max,cap,sep){
+  const per=Math.max(1,cap-1);
+  for(let k=secs.length;k>=0;k--){
+    const cols=[];
+    for(const s of secs.slice(0,k)) cols.push(...spill(s,need(s.players.length,per)));
+    const tail=secs.slice(k);
+    if(tail.length) cols.push(...packShared(tail,cap,sep));
+    if(cols.length<=max) return {cols,own:k,sep,fitted:true};
+  }
+  return {cols:packShared(secs,cap,sep),own:0,sep,fitted:false};
+}
+
+/** 分节空行可牺牲：去掉它能让更多子服独占列、或从「超预算」变成装得下。 */
+function allocate(secs,max,cap,sepWanted){
+  if(!secs.length) return {cols:[],own:0,sep:sepWanted,fitted:true};
+  const a=tryAllocate(secs,max,cap,sepWanted);
+  if(!sepWanted) return a;
+  const b=tryAllocate(secs,max,cap,false);
+  if(a.fitted) return (b.fitted&&b.own>a.own) ? b : a;
+  return b.fitted ? b : a;
+}
+
+function buildLayout(){
+  // 1) 分节：[servers.names] 里全部保留（0 人也占列头），组内按名字排序
+  const secs=S.servers.map(s=>({
+    key:s.key, display:s.display||s.key,
+    players:[...s.players].sort((a,b)=>a.name.toLowerCase().localeCompare(b.name.toLowerCase()))
+  }));
+  // 人数降序（平手服名升序）—— 这就是列的左右顺序
+  secs.sort((a,b)=> b.players.length-a.players.length || a.key.localeCompare(b.key));
+
+  // 2) 分列（含续列 + 尾部共享列）
+  const cap=Math.max(2,S.rows);
+  const plan=allocate(secs,Math.max(1,S.maxCols),cap,S.sep);
+  const cols=plan.cols, sep=plan.sep, sepDropped=S.sep&&!plan.sep;
+
+  // 3) 自适应行数
+  const c=Math.max(1,cols.length);
+  const natural=cols.reduce((m,col)=>Math.max(m,colHeight(col,sep)),0);
+  const rMin=Math.ceil((cap*(c-1)+1)/c);
+  const R=Math.max(natural,rMin,1);
+
+  // 4) 填槽（列主序）
+  const slots=[], desc=[];
+  for(const col of cols){
+    const sds=[]; let placed=0;
+    for(let i=0;i<col.parts.length;i++){
+      const part=col.parts[i], sec=part.sec, total=sec.players.length;
+      // 列头：#count# 恒为该子服总人数（续列也一样，"列名不变"）
+      slots.push(H(fill(fill(S.hdrFmt,'name',sec.display),'count',total)));
+      placed++;
+      for(let k=part.from;k<part.to;k++){ slots.push({kind:'pl',p:sec.players[k]}); placed++; }
+      sds.push({key:sec.key,display:sec.display,total,here:part.to-part.from,
+                part:part.part,parts:part.parts});
+      if(i<col.parts.length-1&&sep){ slots.push(BLANK); placed++; }
+    }
+    for(let i=placed;i<R;i++) slots.push(BLANK);
+    desc.push(sds);
+  }
+  return {slots,hidden:new Set(S.connecting.map(p=>p.uuid)),desc,
+          rows:R,cols:cols.length,natural,rMin,
+          exceedsColumns:!plan.fitted,sepDropped,own:plan.own};
+}
+
+/* flat 模式：前缀 + 可选排序（排序基数 = 人数降序排名） */
+function buildFlat(){
+  const ranked=[...S.servers].filter(s=>s.players.length)
+    .sort((a,b)=> b.players.length-a.players.length || a.key.localeCompare(b.key));
+  const rank=new Map(ranked.map((s,i)=>[s.key,i]));
+  const all=[];
+  S.servers.forEach(s=>s.players.forEach(p=>all.push({p,srv:s})));
+  if(S.flatSort) all.sort((a,b)=> rank.get(a.srv.key)-rank.get(b.srv.key)
+    || a.p.name.toLowerCase().localeCompare(b.p.name.toLowerCase()));
+  else all.sort((a,b)=>a.p.joinSeq-b.p.joinSeq);
+  const slots=all.map(({p,srv})=>({kind:'pl',p,prefix:fill(S.preFmt,'name',srv.display||srv.key)}));
+  return {slots,hidden:new Set(S.connecting.map(p=>p.uuid)),desc:null,rows:0,cols:0};
+}
+
+/* 客户端折行：列数=ceil(n/rows)，行数=ceil(n/列数) */
+function wrap(n,cap){
+  if(n<=0) return {c:0,r:0};
+  const c=Math.ceil(n/cap);
+  return {c,r:Math.ceil(n/c)};
+}
+</script>
+<script>
+const $=id=>document.getElementById(id);
+let prevUuids=new Set();
+
+function entryHtml(slot,fresh){
+  if(slot.kind==='pl'){
+    const p=slot.p, body=(slot.prefix?legacy(slot.prefix):'')+plain(p.name);
+    return `<div class="entry pl${fresh.has(p.uuid)?' flash':''}" data-uuid="${p.uuid}" title="点一下 = ${esc(p.name)} 退出代理">
+      <img class="head" src="${head(p.name,false)}" alt=""><span class="nm">${body}</span>${pingBars(p.ping)}</div>`;
+  }
+  const cls=slot.kind==='hdr'?'entry fake hdr':'entry fake';
+  const text=slot.kind==='blank'?'':legacy(slot.text);
+  return `<div class="${cls}"><img class="head" src="${head('',true)}" alt="">
+    <span class="nm">${text}</span>${pingBars(S.blankPing)}</div>`;
+}
+
+function render(){
+  const eff=effectiveMode();
+  const layout = eff==='layout'? buildLayout() : buildFlat();
+  const n=layout.slots.length;
+  const cw=wrap(n,S.rows);
+  // 新加入的条目闪一下
+  const now=new Set(layout.slots.filter(s=>s.kind==='pl').map(s=>s.p.uuid));
+  const fresh=new Set([...now].filter(u=>!prevUuids.has(u)));
+  prevUuids=now;
+
+  // 按客户端规则列主序切块（这才是玩家真正看到的样子）
+  const online=onlineCount();
+  let html='<div class="tl-head">'+legacy('&bVTabSort &7· &f模拟服务器 &8| &7在线 '
+    +online+' 人')+'</div><div class="grid">';
+  if(n===0){
+    html+='<div class="col"><div class="entry fake"><span class="nm">'+legacy('&8（无条目）')+'</span></div></div>';
+  }else{
+    for(let c=0;c<cw.c;c++){
+      html+='<div class="col">';
+      for(let r=0;r<cw.r;r++){
+        const i=c*cw.r+r;
+        if(i<n) html+=entryHtml(layout.slots[i],fresh);
+      }
+      html+='</div>';
+    }
+  }
+  const tag = S.mode==='auto' ? `&7auto &8→ &f${eff} &8· &7在线 ${online} / 阈值 ${S.rows}` : null;
+  html+='</div><div class="tl-foot">'+legacy(eff==='layout'
+      ? `&7网格 &f${layout.cols}&7 列 × &f${layout.rows}&7 行` + (tag?'  &8| '+tag:'')
+      : '&7flat 弹性列表' + (tag?'  &8| '+tag:''))+'</div>';
+  $('tablist').innerHTML=html;
+
+  // 诊断
+  const fake=layout.slots.filter(s=>s.kind!=='pl').length;
+  if(eff==='layout'&&n===0){
+    $('dModel').textContent='—（无子服 / 无条目）';
+    $('dClient').textContent='—';
+    $('dMatch').innerHTML='';
+  }else if(eff==='layout'){
+    $('dModel').textContent=`${layout.cols} 列 × ${layout.rows} 行`;
+    const want=layout.cols*layout.rows;
+    const ok = cw.c===layout.cols && cw.r===layout.rows && n===want;
+    $('dClient').textContent=`${cw.c} 列 × ${cw.r} 行`;
+    $('dMatch').innerHTML = ok
+      ? '<span class="ok">✓ 精确</span>'+(layout.exceedsColumns?' <span class="bad">（超列预算）</span>':'')
+      : '<span class="bad">✗ 变形</span>';
+  }else{
+    $('dModel').textContent='—（flat 不建网格）';
+    $('dClient').textContent=`${cw.c} 列 × ${cw.r} 行`;
+    $('dMatch').innerHTML='';
+  }
+  $('dEff').textContent = S.mode==='auto' ? `auto → ${eff}` : eff;
+  $('dSlots').textContent=n;
+  $('dOnline').textContent=online;
+  $('dHidden').textContent=layout.hidden.size;
+  $('dVisible').textContent=online-layout.hidden.size;
+  $('dFake').textContent=fake;
+  $('dDump').textContent=dump(layout);
+}
+
+/* /vts layout 的打印效果 */
+function dump(L){
+  const eff=effectiveMode();
+  const head = S.mode==='auto'
+    ? `auto 模式：在线 ${onlineCount()} 人，阈值 ${S.rows} → 当前落地 ${eff}\n` : '';
+  if(eff!=='layout'){
+    return head+`flat 展示：排序 ${S.flatSort?'开':'关'}\nprefix=${S.preFmt}\n`
+      +`条目 ${L.slots.length} 个（隐藏 ${L.hidden.size}）`;
+  }
+  const out=[`grid ${L.cols}x${L.rows}  slots=${L.slots.length}  natural=${L.natural} rMin=${L.rMin}`
+    +`  独占列的服=${L.own}`
+    +(L.exceedsColumns?`\n⚠ 内容塞不进 ${S.maxCols} 列×${S.rows} 行：保行数、列数溢出到 ${L.cols}`:'')
+    +(L.sepDropped?'\n（本轮自动去掉了分节空行，换来更紧凑的网格）':'')];
+  L.desc.forEach((col,i)=>{
+    out.push(`列${i+1}:`);
+    col.forEach(s=>out.push(`  ${s.display} (${s.key}) count=${s.total}`
+      +(s.parts>1?`  第${s.part}/${s.parts}段 本列${s.here}`:'')));
+  });
+  if(S.connecting.length) out.push(`连接中（已隐藏）: ${S.connecting.length}`);
+  return head+out.join('\n');
+}
+
+/* ============ 子服列表 UI ============ */
+function renderServers(){
+  // 名次 = 人数降序（平手服名升序），也就是它在 Tab 里的列次序
+  const rank=new Map([...S.servers]
+    .sort((a,b)=> b.players.length-a.players.length || a.key.localeCompare(b.key))
+    .map((s,i)=>[s.key,i+1]));
+  $('srvList').innerHTML = S.servers.map((s,i)=>`
+    <div class="srv" data-i="${i}">
+      <span class="rk" title="人数降序名次 = 列次序">#${rank.get(s.key)}</span>
+      <span class="key" title="${esc(s.key)}">${esc(s.key)}</span>
+      <input class="dn" value="${esc(s.display)}" data-act="rename" placeholder="显示名">
+      <button class="sm" data-act="minus">−</button>
+      <span class="ct">${s.players.length}</span>
+      <button class="sm" data-act="plus">＋</button>
+      <button class="sm del" data-act="del" title="删除子服">✕</button>
+    </div>`).join('');
+  $('cxV').textContent=S.connecting.length;
+}
+function refresh(){ renderServers(); render(); }
+
+$('srvList').addEventListener('click',e=>{
+  const btn=e.target.closest('button'); if(!btn) return;
+  const i=+btn.closest('.srv').dataset.i, s=S.servers[i];
+  const act=btn.dataset.act;
+  if(act==='plus') s.players.push(newPlayer());
+  else if(act==='minus'){ const p=s.players.pop(); if(p) usedNames.delete(p.name); }
+  else if(act==='del'){ s.players.forEach(p=>usedNames.delete(p.name)); S.servers.splice(i,1); }
+  refresh();
+});
+$('srvList').addEventListener('input',e=>{
+  if(e.target.dataset.act!=='rename') return;
+  S.servers[+e.target.closest('.srv').dataset.i].display=e.target.value;
+  render();
+});
+$('addSrv').onclick=()=>{
+  const key=$('newSrv').value.trim().toLowerCase();
+  if(!key||S.servers.some(s=>s.key===key)) return;
+  S.servers.push({key,display:key,players:[]});
+  $('newSrv').value=''; refresh();
+};
+$('newSrv').addEventListener('keydown',e=>{ if(e.key==='Enter') $('addSrv').click(); });
+$('cxPlus').onclick=()=>{ S.connecting.push(newPlayer()); refresh(); };
+$('cxMinus').onclick=()=>{ const p=S.connecting.pop(); if(p) usedNames.delete(p.name); refresh(); };
+
+/* 点 Tab 里的玩家 = 该玩家退出 */
+$('tablist').addEventListener('click',e=>{
+  const el=e.target.closest('.entry.pl'); if(!el) return;
+  const u=el.dataset.uuid;
+  for(const s of S.servers){
+    const k=s.players.findIndex(p=>p.uuid===u);
+    if(k>=0){ usedNames.delete(s.players[k].name); s.players.splice(k,1); break; }
+  }
+  refresh();
+});
+
+/* 批量 */
+function randomJoin(n){
+  if(!S.servers.length) return;
+  for(let i=0;i<n;i++) S.servers[Math.floor(Math.random()*S.servers.length)].players.push(newPlayer());
+}
+$('rnd10').onclick=()=>{ randomJoin(10); refresh(); };
+$('rnd1').onclick=()=>{ randomJoin(1); refresh(); };
+$('kick1').onclick=()=>{
+  const pool=S.servers.filter(s=>s.players.length);
+  if(!pool.length) return;
+  const s=pool[Math.floor(Math.random()*pool.length)];
+  const k=Math.floor(Math.random()*s.players.length);
+  usedNames.delete(s.players[k].name); s.players.splice(k,1); refresh();
+};
+$('clr').onclick=()=>{ S.servers.forEach(s=>s.players=[]); S.connecting=[]; usedNames=new Set(); refresh(); };
+$('preset').onclick=()=>{ loadPreset(); refresh(); };
+
+/* 配置绑定 */
+const bindR=(id,key)=>{ const el=$(id); el.oninput=()=>{ S[key]=+el.value; $(id+'V').textContent=el.value; render(); }; };
+bindR('maxCols','maxCols'); bindR('rows','rows');
+const bindC=(id,key)=>{ $(id).onchange=e=>{ S[key]=e.target.checked; render(); }; };
+bindC('sep','sep'); bindC('flatSort','flatSort');
+const bindT=(id,key)=>{ $(id).oninput=e=>{ S[key]=e.target.value; render(); }; };
+bindT('hdrFmt','hdrFmt'); bindT('preFmt','preFmt');
+$('blankPing').oninput=e=>{ S.blankPing=Math.max(0,Math.min(60000,+e.target.value||0)); render(); };
+$('mode').onchange=e=>{
+  S.mode=e.target.value;
+  // auto 两套参数都要能改
+  $('sec-layout').style.display = S.mode==='flat'?'none':'';
+  $('sec-flat').style.display = S.mode==='layout'?'none':'';
+  $('autoNote').style.display = S.mode==='auto'?'':'none';
+  prevUuids=new Set(); render();
+};
+
+/* &k 乱码动画 */
+const GLY='ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789!?#@%&';
+setInterval(()=>{
+  document.querySelectorAll('.obf').forEach(el=>{
+    if(!el.dataset.len) el.dataset.len=el.textContent.length;
+    el.textContent=Array.from({length:+el.dataset.len},()=>GLY[Math.floor(Math.random()*GLY.length)]).join('');
+  });
+},80);
+
+/* 初始模式可用 ?mode=auto 指定（方便分享/截图某个模式） */
+const q=new URLSearchParams(location.search).get('mode');
+if(q&&['layout','flat','auto'].includes(q)) $('mode').value=q;
+$('mode').onchange({target:$('mode')});
+loadPreset(); refresh();
+</script>
+</body>
+</html>

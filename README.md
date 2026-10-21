@@ -3,6 +3,11 @@
 Velocity 代理端 Tab 展示插件：**layout 固定网格**（Hypixel 式，列头 = 子服名，假人补位）、
 **flat 前缀列表**、**auto 按在线人数自适应**，三种模式一键切换。
 
+> **想先看效果？** → <https://shijiu-world.github.io/VTabSort/>
+> 纯前端模拟器（也可以直接打开本地的 [`docs/index.html`](docs/index.html)），复刻了同一套分列
+> 算法，可以改配置、加退玩家、实时看 Tab 怎么变（和插件输出逐场景核对过）。
+> 带 `?mode=auto` / `?mode=flat` 参数能直接开到指定模式。
+
 ## 为什么会有它
 
 装了 VelocityScoreboardAPI v2 之后 TAB 的 team 排序终于能用，但代价是代理 team 优先级压过后端（小游戏藏不了名字）、team 前后缀清不干净。关掉 `scoreboard-teams` 后 Tab 失去排序。而 MC **1.21.2+** 的 tab 协议本身就有 `listOrder` 字段（客户端原生排序、不经过 scoreboard team），Velocity API 直接支持；现成插件没有一个走这条路（TAB 普通排序/Velocitab 都只用 team；TAB Layout 是写死 80 格的固定网格，列头/分列不可配），所以自研。

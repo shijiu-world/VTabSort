@@ -6,6 +6,7 @@
 - 🔴 **v3 分列规则**（删了 [servers].order/unknown、[layout].truncate/overflow-format）：①列的左右顺序 = 子服人数降序（平手服名升序）；②一个服 > rows-1 人就续开列，按列均分、余数给靠前的列，续列列头文字完全一样（#count# 恒为总人数）；③列预算不够时尾部开共享列（可占多列，packShared 按 cap 装箱）；④**保行数、让列数溢出** —— 行数是客户端硬约束，max-columns 只是期望值。
 - 分配算法 = 「试 k 退 k」：k = 独占列的服个数，从 secs.size() 往 0 退，第一个 cols.size() ≤ max 的方案胜出（tryAllocate）；带/不带分节空行各跑一趟，a.fitted 时取独占更多的那个，否则取塞得下的那个（allocate）。分节空行是可牺牲资源 —— 默认 8 服 43 人就是靠去掉空行才做到精确 4×20。
 - auto 落地在 `Configuration.effectiveMode(onlineCount)`，阈值 = `[layout].rows`（客户端拆第二列的点）。🔴 翻面清场放在 `VTabSort.rebuildNow` 里比对 `appliedMode`（AtomicReference），**不能**只在 reload 里比配置——auto 下配置没变也会翻面。
+- `docs/index.html` 是纯前端模拟器（单文件、零依赖，GitHub Pages 站点入口 → https://shijiu-world.github.io/VTabSort/，`.github/workflows/pages.yml` 推 main 自动部署），复刻同一套算法；改 LayoutManager 必须同步改它，并用 `/tmp` 下的 Harness（动态代理伪造 Player/ProxyServer 跑真 build）+ node 抽 JS 对跑同场景核对输出一致。
 - 假条目：UUID = nameUUIDFromBytes("vtabsort-slot-N")，name = "vts_sNNN"；显示名空白槽用 `Component.empty()`；残留清理扫描半径 FAKE_RANGE=512（网格缩短后）。`setListed(false)` 现在只藏连接中（还没进服）的玩家——不藏会把折行挤歪；v3 没有截断了所以没有「被藏的溢出玩家」。
 - 三层兜底：事件直刷 → refresh-delay-ms(200) 延迟补发（TAB 建条目竞态）→ reassert-seconds(3) 周期校准（Paper 重置 listOrder=0、TAB 覆写显示名）。全 diff 应用，无变化零发包。
 - 模式切换清场：flat→layout 先 `resetDisplayNames()`（清前缀）；layout→flat 先 `stripAll()`（拔假条目）。flat 模式显示名归本插件管，layout 模式不碰显示名（归 TAB）。
