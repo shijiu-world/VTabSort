@@ -56,15 +56,17 @@ final class LayoutManager {
 
     private final ProxyServer proxy;
     private final Sorter sorter;
+    private final SkinCache skins;
     /**
      * 上一轮实际用掉的槽位数。清理残留假条目时按「本轮和上一轮的较大值」扫，
      * 保证网格缩小时不留尾巴；初值取 FAKE_RANGE，顺便覆盖上任实例的可能残留。
      */
     private volatile int lastSlotCount = FAKE_RANGE;
 
-    LayoutManager(final ProxyServer proxy, final Sorter sorter) {
+    LayoutManager(final ProxyServer proxy, final Sorter sorter, final SkinCache skins) {
         this.proxy = proxy;
         this.sorter = sorter;
+        this.skins = skins;
     }
 
     // ------------------------------------------------------------------
@@ -412,7 +414,7 @@ final class LayoutManager {
         try {
             final TabListEntry entry = TabListEntry.builder()
                     .tabList(tabList)
-                    .profile(fakeProfile(slot, cfg))
+                    .profile(fakeProfile(slot))
                     .displayName(display)
                     .latency(cfg.blankPing())
                     .gameMode(0)
@@ -468,13 +470,22 @@ final class LayoutManager {
         return UUID.nameUUIDFromBytes(("vtabsort-slot-" + slot).getBytes(StandardCharsets.UTF_8));
     }
 
-    private static GameProfile fakeProfile(final int slot, final Configuration cfg) {
-        final String skin = cfg.defaultSkin();
-        final List<GameProfile.Property> props = skin == null || skin.isEmpty()
-                ? List.of()
-                : List.of(new GameProfile.Property("textures", skin, ""));
-        // 名字 ≤16 字符且互不相同；没配皮肤就是默认 Steve/Alex
-        return new GameProfile(fakeUuid(slot), String.format(Locale.ROOT, "vts_s%03d", slot), props);
+    private GameProfile fakeProfile(final int slot) {
+        final SkinCache.Skin skin = skins.current();
+        if (skin.value().isEmpty()) {
+            return new GameProfile(fakeUuid(slot), slotName(slot), List.of());
+        }
+        // ⚠️ signature 不能传 null：GameProfile.Property 构造器 checkNotNull 会 NPE。
+        //    空串是安全的 —— 不带签名的写法（哈希/URL/base64）在 SkinCache 归一化时
+        //    已经把 signatureRequired 关掉了，客户端不会去校验（见 SkinCache.normalize）。
+        final List<GameProfile.Property> props =
+                List.of(new GameProfile.Property("textures", skin.value(), skin.signature()));
+        return new GameProfile(fakeUuid(slot), slotName(slot), props);
+    }
+
+    /** 假条目的 profile 名字：≤16 字符且互不相同；没配皮肤就是默认 Steve/Alex。 */
+    private static String slotName(final int slot) {
+        return String.format(Locale.ROOT, "vts_s%03d", slot);
     }
 
     private static String serverOf(final Player p) {

@@ -63,6 +63,7 @@ public final class VTabSort {
     private final Logger logger;
     private final Path dataDirectory;
     private final Sorter sorter;
+    private final SkinCache skins;
     private final LayoutManager layoutManager;
     private final FlatManager flatManager;
 
@@ -88,7 +89,8 @@ public final class VTabSort {
         this.logger = logger;
         this.dataDirectory = dataDirectory;
         this.sorter = new Sorter(proxy);
-        this.layoutManager = new LayoutManager(proxy, sorter);
+        this.skins = new SkinCache(logger, dataDirectory); // 读磁盘缓存，起服就有皮肤
+        this.layoutManager = new LayoutManager(proxy, sorter, skins);
         this.flatManager = new FlatManager(proxy, sorter);
         this.config = Configuration.defaults();
     }
@@ -313,6 +315,17 @@ public final class VTabSort {
         }
     }
 
+    /**
+     * 皮肤异步拉取回来后的回调（在 HttpClient 的线程里）：调度回主线程，
+     * 拔掉旧假条目重建 —— 已发出去的条目改不了 profile，只能重建。
+     */
+    private void rebuildWithNewSkin() {
+        proxy.getScheduler().buildTask(this, () -> {
+            layoutManager.stripAll();
+            rebuildNow();
+        }).schedule();
+    }
+
     /** 无客户端也能核对布局：把当前网格的分列模型打给命令发起者。 */
     private void printLayout(final CommandSource source) {
         final Configuration cfg = config;
@@ -378,6 +391,15 @@ public final class VTabSort {
         }
         config = result.config();
         lastModified = configMtime();
+        // 皮肤：非 player: 写法同步算出来；player: 先用磁盘缓存顶上、后台再拉一次
+        // （拉到后回调 → 拔掉旧假条目重建，让新皮肤立刻生效）。
+        final SkinCache.Skin before = skins.current();
+        skins.refresh(config.skinSpec(), config.skinSignature(), this::rebuildWithNewSkin);
+        if (!before.equals(skins.current())) {
+            // 换皮肤必须重建假条目：Velocity 的 TabListEntry 没有 setProfile，
+            // 已发出去的条目改不了皮肤 —— 不重建的话改了配置得重启代理才生效。
+            layoutManager.stripAll();
+        }
         // 模式切换的清场交给 rebuildNow（它比对的是「上一轮实际落地的模式」，
         // auto 模式下配置没变也可能翻面，统一在那里处理不会漏）。
         rebuildNow();

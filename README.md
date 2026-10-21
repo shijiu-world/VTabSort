@@ -35,7 +35,24 @@ Velocity 代理端 Tab 展示插件：**layout 固定网格**（Hypixel 式，�
   行数是客户端硬约束（超了会被折成别的形状），列预算只是期望值，两者只能保一个。
   `/vts layout` 会提示，调大 `max-columns` / `rows` 即可消除；
 - 假条目：确定性 UUID（`nameUUIDFromBytes("vtabsort-slot-N")`）、可配皮肤
-  （`default-skin` 填 textures 的 base64）与伪装 ping（`blank-ping`）。
+  （`default-skin`，见下）与伪装 ping（`blank-ping`）。
+
+### 假人皮肤怎么填（`default-skin`）
+
+五种写法都认，**最省事的是 `player:<玩家名>`** —— 填个名字，插件自己去 Mojang API
+取该玩家的皮肤（带真签名），缓存到 `plugins/vtabsort/skin-cache.properties`：
+
+| 写法 | 示例 | 说明 |
+|---|---|---|
+| `player:<名字>` | `player:Notch` | **推荐**。起服/重载时先用缓存顶上，同时后台拉一次刷新（reload 即重新获取）。需要能访问 `api.mojang.com` |
+| 纹理哈希 | `292009a4…`（64 位十六进制） | 皮肤网站（mineskin.org / minecraft-heads.com）上的 "Texture URL / hash" 最后那串 |
+| `texture:<哈希>` | `texture:292009a4…` | 和 TAB 同一个写法 |
+| 完整 URL | `http://textures.minecraft.net/texture/292009a4…` | 同上，自动取末段 |
+| base64 value | `ewogICJ0…` | 从 Mojang API / 别人配置复制的；若里面有 `signatureRequired: true` 又没给签名，插件会自动关掉它 |
+
+⚠️ 为什么强调签名：Mojang API 返回的 value 里写着 `signatureRequired: true`，服务器没有
+Mojang 私钥，空签名会让客户端**直接丢弃纹理**、退回默认皮肤。所以哈希类写法由插件自己拼
+属性（不含该字段），只有 `player:` 和「value + signature 都填」这两种才带签名。
 
 ### flat —— 普通列表
 

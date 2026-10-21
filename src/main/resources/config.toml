@@ -32,7 +32,23 @@ rows = 20
 header-format = "&e#name# &7· #count#"   # 列头/分节头；#name# = 子服显示名，#count# = 该服总在线数（续列不变）
 separator = true       # 共享列里两个子服分节之间空一行
 blank-ping = 0         # 假人条目的伪装延迟（毫秒；0 = 满信号）
-default-skin = ""      # 可选：假人皮肤（textures 属性的 base64 值）；空 = 默认皮肤
+#   default-skin = 假人皮肤。五种写法都认（推荐第 ① 种）：
+#      ① player:<玩家名>      例 "player:Notch" —— **自动联网取该玩家的皮肤**
+#         （带 Mojang 真签名），结果缓存到 plugins/vtabsort/skin-cache.properties；
+#         起服/重载时先用缓存顶上（不用等网络），同时后台再拉一遍刷新。
+#         ⚠️ 需要代理能访问 api.mojang.com（限流时保留旧缓存并打 WARN）。
+#      ② 纹理哈希：皮肤网站（mineskin.org / minecraft-heads.com 等）上抄的
+#         "Texture URL / hash" 最后那串 64 位十六进制
+#      ③ texture:<哈希>（和 TAB 同一个写法）
+#      ④ http://textures.minecraft.net/texture/<哈希>
+#      ⑤ 完整 base64 value（从 Mojang API 或别人配置里复制的）
+#     ②③④ 由插件自己拼属性（不含 signatureRequired），客户端不校验签名
+#     —— 我们没有 Mojang 私钥，带 signatureRequired 的 value 没签名会被
+#     客户端拒绝、退回默认皮肤。填 ⑤ 的话：给了签名就原样用，没给签名
+#     插件会自动把 value 里的 signatureRequired 关掉。
+#     改完 /vts reload 即可（插件会自动重建假条目）。留空 = 默认 Steve/Alex。
+default-skin = ""      # 例："player:Notch"
+default-skin-signature = ""   # 只有第 ⑤ 种写法才需要（Mojang API 返回的 signature）
 
 # ------------------------------------------------------------
 # flat 模式（auto 落地到 flat 时同样生效）

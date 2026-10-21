@@ -69,7 +69,8 @@ public final class Configuration {
     private final String headerFormat;
     private final boolean separator;
     private final int blankPing;
-    private final String defaultSkin;
+    private final String skinSpec;
+    private final String skinSignature;
     private final String flatPrefix;
     private final boolean flatSort;
     private final Map<String, String> serverNames;
@@ -82,7 +83,8 @@ public final class Configuration {
 
     private Configuration(final Mode mode, final int maxColumns, final int rows,
                           final String headerFormat, final boolean separator,
-                          final int blankPing, final String defaultSkin,
+                          final int blankPing, final String skinSpec,
+                          final String skinSignature,
                           final String flatPrefix, final boolean flatSort,
                           final Map<String, String> serverNames,
                           final boolean sameServerByJoin,
@@ -95,7 +97,8 @@ public final class Configuration {
         this.headerFormat = headerFormat;
         this.separator = separator;
         this.blankPing = blankPing;
-        this.defaultSkin = defaultSkin;
+        this.skinSpec = skinSpec;
+        this.skinSignature = skinSignature;
         this.flatPrefix = flatPrefix;
         this.flatSort = flatSort;
         this.serverNames = serverNames;
@@ -124,7 +127,7 @@ public final class Configuration {
         messages.put("usage", "用法：/vtabsort reload | layout | demo | version");
         return new Configuration(Mode.LAYOUT, 4, 20,
                 "&e#name# &7· #count#", true,
-                0, "",
+                0, "", "",
                 "&7[&e#name#&7] ", true,
                 names, false, messages,
                 false, 3, 200, 3);
@@ -169,8 +172,20 @@ public final class Configuration {
         return blankPing;
     }
 
-    public String defaultSkin() {
-        return defaultSkin;
+    /**
+     * 假条目的皮肤配置原文（哈希 / {@code texture:} / URL / base64 / {@code player:名字}）。
+     * 真正的解析与缓存由 {@link SkinCache} 负责（{@code player:} 要联网取）。
+     */
+    public String skinSpec() {
+        return skinSpec;
+    }
+
+    /**
+     * 皮肤签名（可选）。只有直接粘贴从 Mojang API 拿到的完整 base64 value
+     * （里面 {@code signatureRequired: true}）时才需要一起填它的 signature。
+     */
+    public String skinSignature() {
+        return skinSignature;
     }
 
     public String flatPrefix() {
@@ -255,7 +270,9 @@ public final class Configuration {
                 defaults().headerFormat());
         final boolean separator = TomlLite.bool(raw, "layout.separator", true);
         final int blankPing = (int) clamp(TomlLite.integer(raw, "layout.blank-ping", 0), 0, 60_000);
-        final String defaultSkin = TomlLite.string(raw, "layout.default-skin", "").trim();
+        // 皮肤：这里只留原文，解析/联网/缓存交给 SkinCache
+        final String skinSig = TomlLite.string(raw, "layout.default-skin-signature", "").trim();
+        final String skinSpec = TomlLite.string(raw, "layout.default-skin", "").trim();
 
         final String flatPrefix = TomlLite.string(raw, "flat.prefix-format", defaults().flatPrefix());
         final boolean flatSort = TomlLite.bool(raw, "flat.sort", true);
@@ -288,7 +305,7 @@ public final class Configuration {
         final int reassert = (int) clamp(TomlLite.integer(raw, "advanced.reassert-seconds", 3), 0, 60);
 
         return new Configuration(mode, maxColumns, rows, headerFormat, separator,
-                blankPing, defaultSkin, flatPrefix, flatSort,
+                blankPing, skinSpec, skinSig, flatPrefix, flatSort,
                 names, byJoin, messages,
                 autoReload, interval, delay, reassert);
     }
