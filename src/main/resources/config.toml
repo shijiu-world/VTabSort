@@ -13,7 +13,7 @@
 # ============================================================
 
 [display]
-mode = "layout"        # layout | flat | auto
+mode = "auto"        # layout | flat | auto
 
 # ------------------------------------------------------------
 # layout 模式（auto 落地到 layout 时同样生效）
@@ -27,9 +27,9 @@ mode = "layout"        # layout | flat | auto
 #          少列几个子服即可消除。
 # ------------------------------------------------------------
 [layout]
-max-columns = 4
+max-columns = 3
 rows = 20
-header-format = "&e#name# &7· #count#"   # 列头/分节头；#name# = 子服显示名，#count# = 该服总在线数（续列不变）
+header-format = " &7[#name#&7] - &6#count# &7&l人"   # 列头/分节头；#name# = 子服显示名，#count# = 该服总在线数（续列不变）
 separator = true       # 共享列里两个子服分节之间空一行
 blank-ping = 0         # 假人条目的伪装延迟（毫秒；0 = 满信号）
 #   show-hat = 皮肤**第二层**（帽子层）要不要渲染。1.21.4 起协议里多了这个字段，
@@ -51,7 +51,7 @@ show-hat = true
 #     客户端拒绝、退回默认皮肤。填 ⑤ 的话：给了签名就原样用，没给签名
 #     插件会自动把 value 里的 signatureRequired 关掉。
 #     改完 /vts reload 即可（插件会自动重建假条目）。留空 = 默认 Steve/Alex。
-default-skin = ""      # 例："player:Notch"
+default-skin = "101388e165555312f7e20506208b994eee011037bd2d3166adefd6b912a95cfe"   # 纯色占位皮肤 #8f8f8f（已上传到皮肤 CDN）
 default-skin-signature = ""   # 只有第 ⑤ 种写法才需要（Mojang API 返回的 signature）
 #   column-skin = **列头（子服名那一行）左边的头像**，和上面 default-skin 完全独立：
 #     · default-skin 只管网格里的**填充假人**；
@@ -65,7 +65,7 @@ column-skin-signature = ""
 # flat 模式（auto 落地到 flat 时同样生效）
 # ------------------------------------------------------------
 [flat]
-prefix-format = "&7[&e#name#&7] "   # 名字前缀；#name# = 子服显示名
+prefix-format = "&8[#name#&8] "   # 名字前缀；#name# = 子服显示名
 sort = true            # true = 按子服人数降序（平手服名升序）；false = 原版顺序
 
 # ------------------------------------------------------------
@@ -107,26 +107,34 @@ footer = [
 #   ⚠️ v3 删掉了 [servers].order 和 [servers].unknown：列顺序不再由服主排。
 # ------------------------------------------------------------
 [servers.names]
-lobby = "大厅"
-survival = "生存净土"
-survival2 = "生存乐土"
-industry = "工业基地"
-starvalley = "星露谷"
-minigame = "电玩中心"
-bedwars = "起床战争"
-killer = "限时游戏"
+lobby = "&#fa86a9&l传送大厅"
+survival = "&#e1f9e8&l生存净土"
+survival2 = "&#9adbc5&l生存乐土"
+industry = "&#f7cf83&l工业基地"
+starvalley = "&#fdb78e&l星露谷"
+minigame = "&#fa86a9&l电玩中心"
+bedwars = "&#fdb78e&l活动区域"
+killer = "&#fdb78e&l限时游戏"
 
 # ------------------------------------------------------------
-# 每个子服的列头头像（可选）—— 不配就用上面的 column-skin
-#   写法和皮肤那几种一样（player:名字 / 64 位纹理哈希 / texture:<哈希> /
+# 每个子服的列头头像 —— **颜色 = 该服在 [servers.names] 里的名字颜色**
+#   写法和皮肤那几种一样（player:名字 / 纹理哈希 / texture:<哈希> /
 #   URL / 完整 base64）。键名就是**子服原名**（小写，和 [servers.names] 一致）。
 #   回退顺序：[servers.skins.<本服>] → column-skin → default-skin。
 #   需要签名（粘贴完整 base64 时）就再写一条 <服名>-signature。
+#   下面是纯色皮肤（64×64 单色 PNG 上传到皮肤 CDN 拿到的哈希）：
+#     #fa86a9 / #e1f9e8 / #9adbc5 / #f7cf83 / #fdb78e
+#   换配色就重新生成对应颜色的纯色图上传，把哈希换进来。
 # ------------------------------------------------------------
 [servers.skins]
-# lobby = "player:Notch"
-# survival = "e1c2...(64 位纹理哈希)"
-# lobby-signature = ""
+lobby      = "a86d503d77b9d8da5850f41bba14cab93e5f543b3c34810d1afc0e5e98a58625"   # #fa86a9 传送大厅
+survival   = "304e3dcdacd61831fd72721a2237d4e221c8b5bccd33265835d37b52ba66aa4d"   # #e1f9e8 生存净土
+survival2  = "d8888b5c3b1eecc2fec9deee42f29668dc26b0d9ad875b844cead708b1940918"   # #9adbc5 生存乐土
+industry   = "632e7a90208c5bf79874f180ce472fe7b052fc6a479d276401f25c83edb016e"   # #f7cf83 工业基地
+starvalley = "fd816f0f3e2c80584273097290e052b2d928344cdfa05f8127ab8d12086bf490"   # #fdb78e 星露谷
+minigame   = "a86d503d77b9d8da5850f41bba14cab93e5f543b3c34810d1afc0e5e98a58625"   # #fa86a9 电玩中心
+bedwars    = "fd816f0f3e2c80584273097290e052b2d928344cdfa05f8127ab8d12086bf490"   # #fdb78e 活动区域
+killer     = "fd816f0f3e2c80584273097290e052b2d928344cdfa05f8127ab8d12086bf490"   # #fdb78e 限时游戏
 
 [general]
 same-server-order = "name"   # 同一子服内：name = 名字序 / join = 加入顺序
