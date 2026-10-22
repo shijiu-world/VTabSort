@@ -98,6 +98,10 @@ public final class TomlLite {
      * 就变成了 **false**。一个空格加 # 就把开关翻过来，而且日志里毫无痕迹。
      *
      * <p>按 TOML 规范：# 只有前面是空白时才算注释，所以 {@code abc#def} 这种仍然是内容。
+     * ⚠️ 唯一例外是**行首的 #**（i == 0）：整行注释。少了这条，
+     * {@code # lobby = "player:Notch"} 这种"注释掉的示例"会被当成真配置
+     * —— 键名变成 {@code "servers.skins.# lobby"}，动态扫前缀的功能（如
+     * [servers.skins]）就会凭空多出一个叫 "# lobby" 的服。
      */
     private static String stripComment(final String line) {
         char quote = 0;
@@ -115,7 +119,7 @@ public final class TomlLite {
                 quote = c;
                 continue;
             }
-            if (c == '#' && i > 0 && Character.isWhitespace(line.charAt(i - 1))) {
+            if (c == '#' && (i == 0 || Character.isWhitespace(line.charAt(i - 1)))) {
                 return line.substring(0, i);
             }
         }
