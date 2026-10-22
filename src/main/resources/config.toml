@@ -46,10 +46,15 @@ show-hat = true
 #      ③ texture:<哈希>（和 TAB 同一个写法）
 #      ④ http://textures.minecraft.net/texture/<哈希>
 #      ⑤ 完整 base64 value（从 Mojang API 或别人配置里复制的）
-#     ②③④ 由插件自己拼属性（不含 signatureRequired），客户端不校验签名
-#     —— 我们没有 Mojang 私钥，带 signatureRequired 的 value 没签名会被
-#     客户端拒绝、退回默认皮肤。填 ⑤ 的话：给了签名就原样用，没给签名
-#     插件会自动把 value 里的 signatureRequired 关掉。
+#     ②③④ 由插件自己拼属性，**不带签名**。签名是 Mojang 私钥签的，我们造
+#     不出来；而有些客户端/版本会直接丢弃无签名的纹理 → 全部退回默认
+#     Steve/Alex，且日志里一条错都没有（最难查）。所以**想要一定生效就用
+#     ① 或 ⑤**：MineSkin 上传时会一起返回 data.texture.value 和
+#     data.texture.signature，把两串分别贴进 xxx 和 xxx-signature 即可
+#     （带真签名，signatureRequired 保持 true 也正常显示）。
+#     填 ⑤ 时：给了签名就原样用；没给签名插件会把 signatureRequired 关掉。
+#     （②③④ 是老玩家最习惯的写法，保留支持，但线上验收时优先看 reload
+#      日志那行"皮肤已就绪（N 份带 Mojang 签名）"再排别的问题。）
 #     改完 /vts reload 即可（插件会自动重建假条目）。留空 = 默认 Steve/Alex。
 default-skin = "101388e165555312f7e20506208b994eee011037bd2d3166adefd6b912a95cfe"   # 纯色占位皮肤 #8f8f8f（已上传到皮肤 CDN）
 default-skin-signature = ""   # 只有第 ⑤ 种写法才需要（Mojang API 返回的 signature）

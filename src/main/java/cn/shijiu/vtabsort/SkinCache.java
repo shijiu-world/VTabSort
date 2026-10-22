@@ -177,7 +177,56 @@ final class SkinCache {
                 changed = true;
             }
         }
+        logSummary(newSpecs);
         return changed;
+    }
+
+    /**
+     * 把「哪份皮肤认出来了、带不带签名、哪份写错了」打到日志里。
+     *
+     * <p>🔴 皮肤不生效是**最难排查**的一类问题：配错了不报错，客户端只是默默
+     * 显示默认 Steve/Alex，看日志一片干净。v3.3.3 之前就是这样 —— 线上
+     * 「颜色头像全是默认皮肤」查了半天才发现是配置里贴的是无签名写法。
+     * 宁可在 reload 时多一行 INFO，也不要让人再去猜。
+     */
+    private void logSummary(final Map<String, String> newSpecs) {
+        final StringBuilder ok = new StringBuilder();
+        final StringBuilder bad = new StringBuilder();
+        int signed = 0;
+        for (final Map.Entry<String, String> e : newSpecs.entrySet()) {
+            final String raw = e.getValue() == null ? "" : e.getValue().trim();
+            if (raw.isEmpty()) {
+                continue; // 留空 = 有意不配，不算问题
+            }
+            final Skin skin = resolved.getOrDefault(e.getKey(), Skin.NONE);
+            if (skin.isEmpty()) {
+                if (raw.toLowerCase(Locale.ROOT).startsWith(PREFIX_PLAYER)) {
+                    ok.append(' ').append(e.getKey()).append("=待联网");
+                } else {
+                    bad.append(' ').append(e.getKey()).append("=[").append(head(raw)).append(']');
+                }
+                continue;
+            }
+            if (!skin.signature().isEmpty()) {
+                signed++;
+                ok.append(' ').append(e.getKey()).append("=签名✓");
+            } else {
+                ok.append(' ').append(e.getKey()).append("=无签名");
+            }
+        }
+        if (ok.length() > 0) {
+            logger.info("[vtabsort] 皮肤已就绪（" + signed + " 份带 Mojang 签名）:" + ok);
+        }
+        if (bad.length() > 0) {
+            logger.warn("[vtabsort] 这些皮肤写法认不出来，对应位置会显示默认皮肤:" + bad
+                    + " —— 哈希要 32~80 位十六进制；贴完整 base64 时签名要写在 "
+                    + "<名称>-signature 里");
+        }
+    }
+
+    /** 日志里别把一长串 base64 全打出来。 */
+    private static String head(final String s) {
+        return s.length() <= 24 ? s : s.substring(0, 24) + "…";
     }
 
     /** 同步能算出来多少算多少；{@code player:} 顺手起一个后台请求。 */
