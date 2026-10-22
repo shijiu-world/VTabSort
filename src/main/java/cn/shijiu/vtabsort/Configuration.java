@@ -80,6 +80,13 @@ public final class Configuration {
     private final boolean showHat;
     private final String skinSpec;
     private final String skinSignature;
+    /** 列头默认头像（[layout].column-skin）—— 与占位皮肤 default-skin 互不相干。 */
+    private final String columnSkin;
+    private final String columnSkinSignature;
+    /** 每个子服的列头头像（[servers.skins]，键已转小写）。 */
+    private final Map<String, String> serverSkins;
+    /** 每个子服列头头像的签名（[servers.skins.<服名>-signature]，键已转小写）。 */
+    private final Map<String, String> serverSkinSignatures;
     private final String flatPrefix;
     private final boolean flatSort;
     private final Map<String, String> serverNames;
@@ -98,6 +105,9 @@ public final class Configuration {
                           final String headerFormat, final boolean separator,
                           final int blankPing, final boolean showHat, final String skinSpec,
                           final String skinSignature,
+                          final String columnSkin, final String columnSkinSignature,
+                          final Map<String, String> serverSkins,
+                          final Map<String, String> serverSkinSignatures,
                           final String flatPrefix, final boolean flatSort,
                           final Map<String, String> serverNames,
                           final boolean sameServerByJoin,
@@ -115,6 +125,10 @@ public final class Configuration {
         this.showHat = showHat;
         this.skinSpec = skinSpec;
         this.skinSignature = skinSignature;
+        this.columnSkin = columnSkin;
+        this.columnSkinSignature = columnSkinSignature;
+        this.serverSkins = serverSkins;
+        this.serverSkinSignatures = serverSkinSignatures;
         this.flatPrefix = flatPrefix;
         this.flatSort = flatSort;
         this.serverNames = serverNames;
@@ -146,7 +160,7 @@ public final class Configuration {
         messages.put("usage", "用法：/vtabsort reload | layout | demo | version");
         return new Configuration(Mode.LAYOUT, 4, 20,
                 "&e#name# &7· #count#", true,
-                0, true, "", "",
+                0, true, "", "", "", "", Map.of(), Map.of(),
                 "&7[&e#name#&7] ", true,
                 names, false, messages,
                 false, 3, 200, 3,
@@ -213,6 +227,31 @@ public final class Configuration {
      */
     public String skinSignature() {
         return skinSignature;
+    }
+
+    /** 列头默认头像的皮肤配置原文（留空 = 退回占位皮肤）。 */
+    public String columnSkin() {
+        return columnSkin;
+    }
+
+    public String columnSkinSignature() {
+        return columnSkinSignature;
+    }
+
+    /**
+     * 各子服的列头头像（服名小写 → 皮肤配置原文）。
+     * 没配的服走 {@link #columnSkin()}，再没有才用 {@link #skinSpec()}。
+     */
+    public Map<String, String> serverSkins() {
+        return serverSkins;
+    }
+
+    /**
+     * 各子服列头头像的签名（服名小写 → 签名）。
+     * 只有直接粘贴完整 base64 value（里面 {@code signatureRequired: true}）才需要。
+     */
+    public Map<String, String> serverSkinSignatures() {
+        return serverSkinSignatures;
     }
 
     public String flatPrefix() {
@@ -316,6 +355,34 @@ public final class Configuration {
         // 皮肤：这里只留原文，解析/联网/缓存交给 SkinCache
         final String skinSig = TomlLite.string(raw, "layout.default-skin-signature", "").trim();
         final String skinSpec = TomlLite.string(raw, "layout.default-skin", "").trim();
+        final String columnSig = TomlLite.string(raw, "layout.column-skin-signature", "").trim();
+        final String columnSkin = TomlLite.string(raw, "layout.column-skin", "").trim();
+
+        // [servers.skins.<服名>] = 该子服列头的头像；没配的服退回 column-skin。
+        // 签名写成 [servers.skins.<服名>-signature]（只有粘贴完整 base64 才需要）。
+        final Map<String, String> serverSkins = new TreeMap<>();
+        final Map<String, String> serverSigs = new TreeMap<>();
+        final String prefix = "servers.skins.";
+        final String sigSuffix = "-signature";
+        for (final Map.Entry<String, Object> e : raw.entrySet()) {
+            final String key = e.getKey();
+            if (!key.startsWith(prefix) || e.getValue() == null) {
+                continue;
+            }
+            final String rest = key.substring(prefix.length()).trim().toLowerCase(Locale.ROOT);
+            final String spec = String.valueOf(e.getValue()).trim();
+            if (rest.isEmpty() || spec.isEmpty()) {
+                continue;
+            }
+            if (rest.endsWith(sigSuffix)) {
+                final String server = rest.substring(0, rest.length() - sigSuffix.length());
+                if (!server.isEmpty()) {
+                    serverSigs.put(server, spec);
+                }
+                continue;
+            }
+            serverSkins.put(rest, spec);
+        }
 
         final String flatPrefix = TomlLite.string(raw, "flat.prefix-format", defaults().flatPrefix());
         final boolean flatSort = TomlLite.bool(raw, "flat.sort", true);
@@ -356,7 +423,8 @@ public final class Configuration {
                 defaults().footerLines());
 
         return new Configuration(mode, maxColumns, rows, headerFormat, separator,
-                blankPing, showHat, skinSpec, skinSig, flatPrefix, flatSort,
+                blankPing, showHat, skinSpec, skinSig,
+                columnSkin, columnSig, serverSkins, serverSigs, flatPrefix, flatSort,
                 names, byJoin, messages,
                 autoReload, interval, delay, reassert,
                 hfEnabled, header, footer);

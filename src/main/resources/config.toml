@@ -53,6 +53,13 @@ show-hat = true
 #     改完 /vts reload 即可（插件会自动重建假条目）。留空 = 默认 Steve/Alex。
 default-skin = ""      # 例："player:Notch"
 default-skin-signature = ""   # 只有第 ⑤ 种写法才需要（Mojang API 返回的 signature）
+#   column-skin = **列头（子服名那一行）左边的头像**，和上面 default-skin 完全独立：
+#     · default-skin 只管网格里的**填充假人**；
+#     · column-skin 只管列头那一行的小头像。
+#     写法和 default-skin 一模一样（player:名字 / 哈希 / texture: / URL / base64）。
+#     没配（留空）就退回 default-skin（老版本升级上来观感不变）。
+column-skin = ""
+column-skin-signature = ""
 
 # ------------------------------------------------------------
 # flat 模式（auto 落地到 flat 时同样生效）
@@ -108,6 +115,18 @@ starvalley = "星露谷"
 minigame = "电玩中心"
 bedwars = "起床战争"
 killer = "限时游戏"
+
+# ------------------------------------------------------------
+# 每个子服的列头头像（可选）—— 不配就用上面的 column-skin
+#   写法和皮肤那几种一样（player:名字 / 64 位纹理哈希 / texture:<哈希> /
+#   URL / 完整 base64）。键名就是**子服原名**（小写，和 [servers.names] 一致）。
+#   回退顺序：[servers.skins.<本服>] → column-skin → default-skin。
+#   需要签名（粘贴完整 base64 时）就再写一条 <服名>-signature。
+# ------------------------------------------------------------
+[servers.skins]
+# lobby = "player:Notch"
+# survival = "e1c2...(64 位纹理哈希)"
+# lobby-signature = ""
 
 [general]
 same-server-order = "name"   # 同一子服内：name = 名字序 / join = 加入顺序

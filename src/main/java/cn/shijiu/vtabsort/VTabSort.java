@@ -398,11 +398,21 @@ public final class VTabSort {
         }
         config = result.config();
         lastModified = configMtime();
-        // 皮肤：非 player: 写法同步算出来；player: 先用磁盘缓存顶上、后台再拉一次
+        // 皮肤：三档 —— 占位皮肤（填充假人）/ 默认列头头像 / 各子服列头头像。
+        // 非 player: 写法同步算出来；player: 先用磁盘缓存顶上、后台再拉一次
         // （拉到后回调 → 拔掉旧假条目重建，让新皮肤立刻生效）。
-        final SkinCache.Skin before = skins.current();
-        skins.refresh(config.skinSpec(), config.skinSignature(), this::rebuildWithNewSkin);
-        if (!before.equals(skins.current())) {
+        final Map<String, String> specs = new LinkedHashMap<>();
+        final Map<String, String> sigs = new LinkedHashMap<>();
+        specs.put(SkinCache.DEFAULT_KEY, config.skinSpec());
+        sigs.put(SkinCache.DEFAULT_KEY, config.skinSignature());
+        specs.put(SkinCache.HEADER_KEY, config.columnSkin());
+        sigs.put(SkinCache.HEADER_KEY, config.columnSkinSignature());
+        for (final Map.Entry<String, String> e : config.serverSkins().entrySet()) {
+            final String key = SkinCache.serverKey(e.getKey());
+            specs.put(key, e.getValue());
+            sigs.put(key, config.serverSkinSignatures().getOrDefault(e.getKey(), ""));
+        }
+        if (skins.refresh(specs, sigs, this::rebuildWithNewSkin)) {
             // 换皮肤必须重建假条目：Velocity 的 TabListEntry 没有 setProfile，
             // 已发出去的条目改不了皮肤 —— 不重建的话改了配置得重启代理才生效。
             layoutManager.stripAll();

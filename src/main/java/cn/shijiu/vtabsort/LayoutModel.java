@@ -22,16 +22,25 @@ final class LayoutModel {
      *                🔴 真玩家的 tab 条目由 TAB 创建，事件瞬间可能还没建出来 ——
      *                那时用同名假条目**临时占位**，否则网格会缺一格、
      *                客户端折行重算 → 整列错位（见 LayoutManager.applyViewer）。
+     * @param server  列头槽位所属的子服名（小写）；null = 不是列头（玩家/填充/demo）。
+     *                只有列头才用「列头头像」皮肤，和占位皮肤互不相干
+     *                （见 SkinCache#columnSkin）。
      */
     static final class Slot {
         final UUID player;
         final Component display;
         final String name;
+        final String server;
 
         Slot(final UUID player, final Component display, final String name) {
+            this(player, display, name, null);
+        }
+
+        Slot(final UUID player, final Component display, final String name, final String server) {
             this.player = player;
             this.display = display;
             this.name = name;
+            this.server = server;
         }
     }
 

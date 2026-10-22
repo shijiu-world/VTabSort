@@ -312,10 +312,11 @@ final class LayoutManager {
         for (int i = 0; i < col.parts().size(); i++) {
             final Part part = col.parts().get(i);
             final Sec sec = part.sec();
-            // 列头：#count# 恒为该子服总人数（续列的列头也一样，"列名不变"）
+            // 列头：#count# 恒为该子服总人数（续列的列头也一样，"列名不变"）。
+            // 🔴 server 字段带上：列头要用**这个服的列头头像**皮肤（可单独配）。
             slots.add(new LayoutModel.Slot(null, textComponent(cfg.headerFormat()
                     .replace("#name#", sec.display)
-                    .replace("#count#", String.valueOf(sec.count()))), null));
+                    .replace("#count#", String.valueOf(sec.count()))), null, sec.server));
             placed++;
             for (int k = part.from(); k < part.to(); k++) {
                 final TabUser u = sec.players.get(k);
@@ -386,13 +387,18 @@ final class LayoutManager {
                             cfg.showHat())) {
                         final Component placeholder =
                                 Component.text(slot.name == null ? "" : slot.name);
-                        addFake(tabList, i, order, placeholder, cfg);
+                        addFake(tabList, i, order, placeholder, cfg, null);
                     }
                 }
             } else {
                 final TabListEntry entry = tabList.getEntry(fakeId).orElse(null);
-                if (entry == null) {
-                    addFake(tabList, i, order, slot.display, cfg);
+                // 🔴 列头会换服：人数一变，列的左右顺序就变，同一个槽位下标可能
+                //    从「大厅的列头」变成「生存的列头」。显示名能 setDisplayName 改，
+                //    皮肤改不了（TabListEntry 没有 setProfile）—— 只能拔了重建，
+                //    不然列头头像会一直挂着上一个服的皮。
+                if (entry == null || !skinMatches(entry, slot.server)) {
+                    removeFake(tabList, fakeId);
+                    addFake(tabList, i, order, slot.display, cfg, slot.server);
                 } else {
                     if (!Objects.equals(entry.getDisplayNameComponent().orElse(null), slot.display)) {
                         setDisplay(entry, slot.display);
@@ -506,11 +512,11 @@ final class LayoutManager {
     }
 
     private void addFake(final TabList tabList, final int slot, final int order,
-                         final Component display, final Configuration cfg) {
+                         final Component display, final Configuration cfg, final String server) {
         try {
             final TabListEntry entry = TabListEntry.builder()
                     .tabList(tabList)
-                    .profile(fakeProfile(slot))
+                    .profile(fakeProfile(slot, server))
                     .displayName(display)
                     .latency(cfg.blankPing())
                     .gameMode(0)
@@ -571,8 +577,15 @@ final class LayoutManager {
         return UUID.nameUUIDFromBytes(("vtabsort-slot-" + slot).getBytes(StandardCharsets.UTF_8));
     }
 
-    private GameProfile fakeProfile(final int slot) {
-        final SkinCache.Skin skin = skins.current();
+    /**
+     * 假条目的 profile。
+     *
+     * @param server 列头槽位所属子服（null = 填充/占位槽，用占位皮肤）
+     */
+    private GameProfile fakeProfile(final int slot, final String server) {
+        final SkinCache.Skin skin = server == null
+                ? skins.get(SkinCache.DEFAULT_KEY)
+                : skins.columnSkin(server);
         if (skin.value().isEmpty()) {
             return new GameProfile(fakeUuid(slot), slotName(slot), List.of());
         }
@@ -582,6 +595,31 @@ final class LayoutManager {
         final List<GameProfile.Property> props =
                 List.of(new GameProfile.Property("textures", skin.value(), skin.signature()));
         return new GameProfile(fakeUuid(slot), slotName(slot), props);
+    }
+
+    /**
+     * 这条已存在的假条目，皮肤是不是这一格**现在**该用的那张。
+     *
+     * <p>网格一重排（人数变了、列序变了），同一个槽位下标可能换了主人：
+     * 上一轮是「大厅」的列头，这一轮成了「生存」的列头。皮肤是 profile 里的
+     * 属性，改不了 —— 只能拔条目重建，所以这里做 profile 级 diff，
+     * 不一样才重建（一样就一个包都不发）。
+     */
+    private boolean skinMatches(final TabListEntry entry, final String server) {
+        final SkinCache.Skin want = server == null
+                ? skins.get(SkinCache.DEFAULT_KEY)
+                : skins.columnSkin(server);
+        return want.value().equals(texturesOf(entry.getProfile()));
+    }
+
+    /** profile 里的 textures 属性值；没有就是空串。 */
+    private static String texturesOf(final GameProfile profile) {
+        for (final GameProfile.Property p : profile.getProperties()) {
+            if ("textures".equals(p.getName())) {
+                return p.getValue() == null ? "" : p.getValue();
+            }
+        }
+        return "";
     }
 
     /** 假条目的 profile 名字：≤16 字符且互不相同；没配皮肤就是默认 Steve/Alex。 */

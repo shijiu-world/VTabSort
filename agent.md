@@ -9,6 +9,8 @@
 - auto 落地在 `Configuration.effectiveMode(onlineCount)`，阈值 = `[layout].rows`（客户端拆第二列的点）。🔴 翻面清场放在 `VTabSort.rebuildNow` 里比对 `appliedMode`（AtomicReference），**不能**只在 reload 里比配置——auto 下配置没变也会翻面。
 - `docs/index.html` 是纯前端模拟器（单文件、零依赖，GitHub Pages 站点入口 → https://shijiu-world.github.io/VTabSort/，`.github/workflows/pages.yml` 推 main 自动部署），复刻同一套算法；改 LayoutManager 必须同步改它，并用 `/tmp` 下的 Harness（动态代理伪造 Player/ProxyServer 跑真 build）+ node 抽 JS 对跑同场景核对输出一致。
 - 假条目：UUID = nameUUIDFromBytes("vtabsort-slot-N")，name = "vts_sNNN"；显示名空白槽用 `Component.empty()`；残留清理扫描半径 FAKE_RANGE=512（网格缩短后）。`setListed(false)` 现在只藏连接中（还没进服）的玩家——不藏会把折行挤歪；v3 没有截断了所以没有「被藏的溢出玩家」。
+- 🔴 **皮肤分三档（v3.3 起，互不相干）**：`SkinCache` 改成按 key 存多份皮肤 —— `DEFAULT_KEY="@default"`（`[layout].default-skin`，只管**填充假人**）、`HEADER_KEY="@header"`（`[layout].column-skin`，**默认列头头像**）、`serverKey(服名)="server:<小写>"`（`[servers.skins.<服名>]`，单个子服列头）。列头头像回退链：`本服 → @header → @default`（`@header` 没配就退回占位皮肤，老配置升级观感不变）。签名：`default-skin-signature` / `column-skin-signature` / `[servers.skins].<服名>-signature`（只有粘贴完整 base64 才需要）。`SkinCache.refresh(Map specs, Map sigs, Runnable)` 返回"有没有变化"，变了才 `stripAll()` 重建（TabListEntry **没有 setProfile**，已发出的条目改不了皮肤）。
+- 🔴 **列头会换服 → 皮肤必须跟着换**：人数一变列序就变，同一个槽位下标可能从"大厅的列头"变成"生存的列头"；显示名能 `setDisplayName` 改、皮肤改不了 → `applyViewer` 里新增 **profile 级 diff**（`skinMatches` 比 `entry.getProfile()` 的 textures 值），不一致就 remove+add 重建。少了这步，列头头像会一直挂着上一个服的皮。
 - 🔴 **皮肤第二层（showHat）**：1.21.4 起协议多了这个字段，Velocity 建的条目**默认 false** —— 占位皮肤的猫耳（画在第二层）会整个看不见。所有经手的条目（假条目 / 补位 / 真人）都在 `applySlotState` 里 diff 置 `showHat=true`，配置项 `[layout].show-hat`（默认 true）。
 - 🔴 **没装 TAB 时其它子服的真人没有 Tab 条目**（Velocity 不合成全局列表，条目都是后端发的）→ 网格缺格会整列错位 → 用 `Player#getGameProfile()` 补（**真 UUID + 真皮肤**，v3.2.1）；`standins` 集合只记"我们补的"，玩家下线走 `forget()` 清。别再用占位皮肤的假条目顶真人。
 - 三层兜底：事件直刷 → refresh-delay-ms(200) 延迟补发（TAB 建条目竞态）→ reassert-seconds(3) 周期校准（Paper 重置 listOrder=0、TAB 覆写显示名）。全 diff 应用，无变化零发包。
@@ -17,6 +19,7 @@
 - **header/footer（v3.2 起，接手 TAB 卸载后的活）**：`[header-footer]` = `enabled` + `header`/`footer` 两个数组（TomlLite 已支持单行/跨行数组）。`HeaderFooter` 每轮（事件直刷 + 200ms 补发 + reassert 3s）按 viewer 渲染：占位符替换 → `Colors.parse`（多行用 `Component.newline()` 拼）→ diff（渲染字符串没变不发包）→ `sendPlayerListHeaderAndFooter`。🔴 关掉时**只清一次**（发空组件），否则会跟别的 header 插件互相擦。占位符 `%online%`（含 demo 虚拟玩家）`%server%`（显示名）`%server-raw%` `%server-online%` `%player%` `%ping%` `%time%` `%date%`；认不出的原样留着（配错能看见）。
 - 命令 `/vtabsort`（别名 `/vts`）reload/layout/version；`layout` 子命令打印当前分列模型（含 auto 的落地判定、续列第几段、超列预算/去空行提示）。权限 `vtabsort.reload`。主名小写注册。
 - ⚠️ 别用 PlugManX 热卸载（假条目会永久残留玩家 Tab），重启代理换 jar。
+- ⚠️🔴 **也别用 PlugManX 热装载**：Velocity 没有官方卸载机制，PlugManX 热装出来的实例常常是**半加载** —— 类有了，但 `ProxyInitializeEvent` 没真跑 / 监听器没注册 / 定时任务没起，表现就是"装了跟没装一样"（2026-10-22 线上：服主 plugman load vtabsort 后完全没效果，换回 TAB 也一样只剩原版同服列表）。排查：`/vts version` 命令是否存在 + 控制台有没有 "[vtabsort] VTabSort 已就绪"。正确姿势：停代理 → 放 jar → 启代理。
 - 构建：Git Bash `JAVA_HOME=D:/Code/Java/zulu25.34.17-ca-jdk25.0.3-win_x64 mvn -B -o package`（velocity-api 4.3.0 已进本地 m2）。发版改 pom 版本一处（BuildConstants templating）。Java 输出 GBK：`> log && iconv -f GBK -t UTF-8` 看错误。
 - 同步测试服：代理插件 → `D:\game\test_velocity\velocity\plugins\`，旧 jar 进 `plugins/_old/`，产物优先用 Release 那份。
 - 待实测确认：① `setListed(false)` 的条目是否不计入客户端折行的总条目数（若计入，隐藏玩家会多开一列——届时改 removeEntry 方案）；② 测试服实测 4×20/自适应行数渲染是否精确；③ 续列的重复列头在真客户端里观感如何（同一个服名连着出现 2-3 次）。

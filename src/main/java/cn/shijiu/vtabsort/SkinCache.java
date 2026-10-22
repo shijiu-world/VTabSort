@@ -15,30 +15,40 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.Base64;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Properties;
+import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
- * 假条目的皮肤（[layout].default-skin）。
+ * 假条目的皮肤（v3.3 起支持**多份**，按 key 管理）。
  *
- * <p>四种写法：
+ * <p>三类 key：
  * <ol>
- *   <li>{@code player:<名字>} —— 自动去 Mojang API 取该玩家的皮肤（带有效签名），
- *       结果落盘缓存；reload 时重新拉一遍。</li>
- *   <li>纹理哈希（裸 64 位十六进制 / {@code texture:<哈希>} / textures 的完整 URL）</li>
- *   <li>完整的 base64 value（可配 signature）</li>
- *   <li>留空 = 默认 Steve/Alex</li>
+ *   <li>{@link #DEFAULT_KEY} —— {@code [layout].default-skin}：填充假人/占位用；</li>
+ *   <li>{@link #HEADER_KEY} —— {@code [layout].column-skin}：**列头默认头像**；</li>
+ *   <li>{@link #serverKey} —— {@code [servers.skins.<服名>]}：单个子服的列头头像，
+ *       没配就退回 {@link #HEADER_KEY}，再没有才退回 {@link #DEFAULT_KEY}。</li>
  * </ol>
- * 后两种（以及第二种）由本类自己拼属性：关键是**不写 signatureRequired**，
- * 客户端就不会校验签名（我们没有 Mojang 私钥，空签名会被拒绝、退回默认皮肤）。
- * 只有 {@code player:} 走 Mojang 拿到的 value 才带真签名，那时两个都有、原样用。
+ * 列头头像和占位皮肤**互不相干**（服主要求独立）。
+ *
+ * <p>写法（四种，跟原来一样）：
+ * <ol>
+ *   <li>{@code player:<名字>} —— 自动去 Mojang API 取（带有效签名），结果落盘缓存；
+ *       reload 时重新拉一遍。</li>
+ *   <li>纹理哈希（裸 64 位十六进制 / {@code texture:<哈希>} / textures 完整 URL）</li>
+ *   <li>完整的 base64 value（可配 signature）</li>
+ *   <li>留空 = 用上一级的皮肤 / 默认 Steve-Alex</li>
+ * </ol>
+ * 自己拼属性的那几种关键是**不写 signatureRequired**，客户端就不会校验签名
+ * （我们没有 Mojang 私钥，空签名会被拒绝、退回默认皮肤）。
  *
  * <p>线程模型：网络请求一律 {@code CompletableFuture.runAsync}，绝不阻塞事件线程；
  * 拿到结果后回调 → 由调用方（VTabSort）调度回主线程重建假条目。
@@ -49,6 +59,20 @@ final class SkinCache {
     record Skin(String value, String signature) {
 
         static final Skin NONE = new Skin("", "");
+
+        boolean isEmpty() {
+            return value.isEmpty();
+        }
+    }
+
+    /** 占位/填充假人的皮肤键（[layout].default-skin）。 */
+    static final String DEFAULT_KEY = "@default";
+    /** 列头默认头像键（[layout].column-skin）。 */
+    static final String HEADER_KEY = "@header";
+
+    /** 某个子服的列头头像键。 */
+    static String serverKey(final String server) {
+        return "server:" + server.toLowerCase(Locale.ROOT);
     }
 
     private static final Pattern P_ID = Pattern.compile("\"id\"\\s*:\\s*\"([^\"]+)\"");
@@ -57,6 +81,7 @@ final class SkinCache {
     /** 纹理哈希：64 位十六进制。 */
     private static final String HASH = "[0-9a-fA-F]{64}";
     private static final String SKIN_URL = "http://textures.minecraft.net/texture/";
+    private static final String PREFIX_PLAYER = "player:";
 
     /**
      * 🔴 绝不给 HttpClient 塞自己的线程池（.executor） —— 那会让客户端线程随插件
@@ -69,12 +94,18 @@ final class SkinCache {
 
     private final Logger logger;
     private final Path cacheFile;
-    /** 名字（小写）→ 皮肤；内存缓存 + 落盘，起服不用等网络。 */
-    private final Map<String, Skin> cache = new ConcurrentHashMap<>();
-    /** 当前生效的皮肤（fakeProfile 直接读它）。 */
-    private volatile Skin current = Skin.NONE;
-    /** 防止连续 reload 打出并发请求（后一个丢了也无所谓，前一个会写回缓存）。 */
-    private final AtomicBoolean fetching = new AtomicBoolean(false);
+    /** 玩家名（小写）→ 皮肤；磁盘缓存，起服不用等网络。 */
+    private final Map<String, Skin> playerCache = new ConcurrentHashMap<>();
+    /** key → 当前生效的皮肤（fakeProfile 直接读它）。 */
+    private final Map<String, Skin> resolved = new ConcurrentHashMap<>();
+    /** key → 配置原文（异步取回来后要照它重算）。 */
+    private final Map<String, String> specs = new ConcurrentHashMap<>();
+    /** key → 签名原文。 */
+    private final Map<String, String> sigs = new ConcurrentHashMap<>();
+    /** 正在拉的玩家名（防重复打 API —— Mojang 有限流）。 */
+    private final Set<String> inFlight = ConcurrentHashMap.newKeySet();
+    /** 皮肤到位后的回调（由调用方调度回主线程重建）。 */
+    private volatile Runnable onChange;
 
     SkinCache(final Logger logger, final Path dataDirectory) {
         this.logger = logger;
@@ -82,64 +113,132 @@ final class SkinCache {
         load();
     }
 
-    Skin current() {
-        return current;
+    /** 取某个 key 的皮肤；没配/没拉到就是 {@link Skin#NONE}。 */
+    Skin get(final String key) {
+        return resolved.getOrDefault(key, Skin.NONE);
     }
 
     /**
-     * reload 时调用。
+     * 列头头像：该子服自己配的 → 默认列头头像 → 占位皮肤。
+     *
+     * <p>🔴 三级回退是服主要求的语义：「不设置就用默认的列名头像（也可配置）」，
+     * 默认列头也没配才兜到占位皮肤（v3.3 之前列头和占位是同一张皮，
+     * 所以旧配置升级上来观感不变）。
+     *
+     * @param server 子服名（小写）；null/空 = 直接走默认列头
+     */
+    Skin columnSkin(final String server) {
+        if (server != null && !server.isEmpty()) {
+            final Skin own = get(serverKey(server));
+            if (!own.isEmpty()) {
+                return own;
+            }
+        }
+        final Skin header = get(HEADER_KEY);
+        return header.isEmpty() ? get(DEFAULT_KEY) : header;
+    }
+
+    /**
+     * reload 时调用：按配置重算所有 key。
      *
      * <p>同步阶段：非 {@code player:} 的写法直接算出来；{@code player:} 先用磁盘
-     * 缓存顶上（起服瞬间就有皮肤，不用等网络）。
-     * 然后后台拉一次（仅 {@code player:}），拉到后写缓存 + 触发 onChange。
+     * 缓存顶上（起服瞬间就有皮肤，不用等网络），然后后台拉一次。
+     *
+     * @return 有没有任何一份皮肤发生变化（变了就得重建假条目 ——
+     *         Velocity 的 TabListEntry 没有 setProfile，改不了已发出的条目）
      */
-    void refresh(final String spec, final String signature, final Runnable onChange) {
+    boolean refresh(final Map<String, String> newSpecs, final Map<String, String> newSigs,
+                    final Runnable onChange) {
+        this.onChange = onChange;
+        specs.clear();
+        specs.putAll(newSpecs);
+        sigs.clear();
+        sigs.putAll(newSigs);
+        boolean changed = false;
+        for (final Map.Entry<String, String> e : newSpecs.entrySet()) {
+            final Skin target = resolveSync(e.getValue(), newSigs.getOrDefault(e.getKey(), ""));
+            final Skin prev = resolved.put(e.getKey(), target);
+            if (!Objects.equals(prev, target)) {
+                changed = true;
+            }
+        }
+        // 配置里删掉的 key 要同步清掉，否则旧皮肤会一直挂着
+        for (final String key : new ArrayList<>(resolved.keySet())) {
+            if (!newSpecs.containsKey(key)) {
+                resolved.remove(key);
+                changed = true;
+            }
+        }
+        return changed;
+    }
+
+    /** 同步能算出来多少算多少；{@code player:} 顺手起一个后台请求。 */
+    private Skin resolveSync(final String spec, final String signature) {
         final String s = spec == null ? "" : spec.trim();
         if (s.isEmpty()) {
-            current = Skin.NONE;
-            return;
+            return Skin.NONE;
         }
-        if (s.toLowerCase(Locale.ROOT).startsWith("player:")) {
-            final String name = s.substring("player:".length()).trim();
+        if (s.toLowerCase(Locale.ROOT).startsWith(PREFIX_PLAYER)) {
+            final String name = s.substring(PREFIX_PLAYER.length()).trim();
             if (name.isEmpty()) {
-                current = Skin.NONE;
-                return;
+                return Skin.NONE;
             }
-            final Skin cached = cache.get(name.toLowerCase(Locale.ROOT));
-            if (cached != null) {
-                current = cached;
-            }
-            fetchAsync(name, onChange);
-            return;
+            final Skin cached = playerCache.get(name.toLowerCase(Locale.ROOT));
+            fetchAsync(name);
+            return cached == null ? Skin.NONE : cached;
         }
-        current = new Skin(normalize(s, !signature.isEmpty()), signature);
+        final String value = normalize(s, !signature.isEmpty());
+        return value.isEmpty() ? Skin.NONE : new Skin(value, signature);
     }
 
     /** 后台取玩家皮肤（失败就用旧缓存/没皮肤，绝不把插件拖住）。 */
-    private void fetchAsync(final String name, final Runnable onChange) {
-        if (!fetching.compareAndSet(false, true)) {
-            return; // 上一把还没回来，别重复打 API（Mojang 有限流）
+    private void fetchAsync(final String name) {
+        if (!inFlight.add(name.toLowerCase(Locale.ROOT))) {
+            return; // 这名字已经在拉了
         }
         CompletableFuture.runAsync(() -> {
             try {
                 final Skin skin = lookup(name);
                 if (skin == null) {
                     logger.warn("[vtabsort] 没拿到 " + name + " 的皮肤（名字不存在或 API 限流）"
-                            + " —— 沿用" + (cache.containsKey(name.toLowerCase(Locale.ROOT))
+                            + " —— 沿用" + (playerCache.containsKey(name.toLowerCase(Locale.ROOT))
                             ? "缓存" : "默认皮肤"));
                     return;
                 }
-                cache.put(name.toLowerCase(Locale.ROOT), skin);
+                playerCache.put(name.toLowerCase(Locale.ROOT), skin);
                 save();
-                current = skin;
-                logger.info("[vtabsort] 已获取 " + name + " 的皮肤并缓存（假人头像生效）。");
-                onChange.run();
+                // 把这个名字对应的所有 key 重新算一遍（可能多个服都配了同一个人）
+                boolean changed = false;
+                for (final Map.Entry<String, String> e : specs.entrySet()) {
+                    if (!isPlayerSpec(e.getValue(), name)) {
+                        continue;
+                    }
+                    final Skin prev = resolved.put(e.getKey(), skin);
+                    if (!Objects.equals(prev, skin)) {
+                        changed = true;
+                    }
+                }
+                logger.info("[vtabsort] 已获取 " + name + " 的皮肤并缓存（头像生效）。");
+                if (changed) {
+                    final Runnable cb = onChange;
+                    if (cb != null) {
+                        cb.run();
+                    }
+                }
             } catch (final Exception e) {
                 logger.warn("[vtabsort] 获取 " + name + " 的皮肤失败：" + e.getMessage());
             } finally {
-                fetching.set(false);
+                inFlight.remove(name.toLowerCase(Locale.ROOT));
             }
         });
+    }
+
+    /** 这段配置是不是 {@code player:<这个名字>}（忽略大小写）。 */
+    private static boolean isPlayerSpec(final String spec, final String name) {
+        if (spec == null || !spec.toLowerCase(Locale.ROOT).startsWith(PREFIX_PLAYER)) {
+            return false;
+        }
+        return spec.substring(PREFIX_PLAYER.length()).trim().equalsIgnoreCase(name.trim());
     }
 
     /** 名字 → uuid → profile → textures（value + 签名）。 */
@@ -261,7 +360,7 @@ final class SkinCache {
                 if (bar < 0) {
                     continue;
                 }
-                cache.put(key, new Skin(v.substring(0, bar), v.substring(bar + 1)));
+                playerCache.put(key, new Skin(v.substring(0, bar), v.substring(bar + 1)));
             }
         } catch (final IOException e) {
             logger.warn("[vtabsort] 皮肤缓存读不出来（将重新拉取）：" + e.getMessage());
@@ -270,14 +369,14 @@ final class SkinCache {
 
     private void save() {
         final Properties p = new Properties();
-        for (final Map.Entry<String, Skin> e : cache.entrySet()) {
+        for (final Map.Entry<String, Skin> e : playerCache.entrySet()) {
             p.setProperty(e.getKey(), e.getValue().value() + "|" + e.getValue().signature());
         }
         try {
             Files.createDirectories(cacheFile.getParent());
             final Path tmp = cacheFile.resolveSibling(cacheFile.getFileName() + ".tmp");
             try (OutputStream out = Files.newOutputStream(tmp)) {
-                p.store(out, "VTabSort skin cache: name -> base64 value | signature");
+                p.store(out, "VTabSort skin cache: player name -> base64 value | signature");
             }
             Files.move(tmp, cacheFile, StandardCopyOption.REPLACE_EXISTING,
                     StandardCopyOption.ATOMIC_MOVE);
