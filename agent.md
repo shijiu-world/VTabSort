@@ -29,4 +29,5 @@
 - ⚠️🔴 **也别用 PlugManX 热装载**：Velocity 没有官方卸载机制，PlugManX 热装出来的实例常常是**半加载** —— 类有了，但 `ProxyInitializeEvent` 没真跑 / 监听器没注册 / 定时任务没起，表现就是"装了跟没装一样"（2026-10-22 线上：服主 plugman load vtabsort 后完全没效果，换回 TAB 也一样只剩原版同服列表）。排查：`/vts version` 命令是否存在 + 控制台有没有 "[vtabsort] VTabSort 已就绪"。正确姿势：停代理 → 放 jar → 启代理。
 - 构建：Git Bash `JAVA_HOME=D:/Code/Java/zulu25.34.17-ca-jdk25.0.3-win_x64 mvn -B -o package`（velocity-api 4.3.0 已进本地 m2）。发版改 pom 版本一处（BuildConstants templating）。Java 输出 GBK：`> log && iconv -f GBK -t UTF-8` 看错误。
 - 同步测试服：代理插件 → `D:\game\test_velocity\velocity\plugins\`，旧 jar 进 `plugins/_old/`，产物优先用 Release 那份。
+- ⚠️ **tag push 有时不触发 Actions**（2026-10-23 遇到：`v3.3.4` 推了三次、tag 在远端、`pushed_at` 都没更新，`workflow_dispatch` 却能立刻跑）。兜底流程：① `gh workflow run "发布 Release" -R shijiu-world/VTabSort --ref main`；② `gh run download <runId> -n VTabSort -D .workbuddy/ci`；③ `gh release create v3.3.4 .workbuddy/ci/vtabsort-3.3.4.jar -R ... --title v3.3.4 --notes "..."`。**不要反复删 tag 重推**（无意义，tag 在就够）。
 - 待实测确认：① `setListed(false)` 的条目是否不计入客户端折行的总条目数（若计入，隐藏玩家会多开一列——届时改 removeEntry 方案）；② 测试服实测 4×20/自适应行数渲染是否精确；③ 续列的重复列头在真客户端里观感如何（同一个服名连着出现 2-3 次）。
