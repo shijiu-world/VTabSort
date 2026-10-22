@@ -467,15 +467,29 @@ final class LayoutManager {
      */
     private boolean addStandIn(final Player viewer, final TabList tabList, final UUID uuid,
                                final String name, final int order, final boolean showHat) {
+        return addStandIn(viewer, tabList, uuid,
+                name == null ? null : Component.text(name), order, showHat);
+    }
+
+    /**
+     * 同上，但显示名由调用方给（flat 模式要带子服前缀）。
+     *
+     * <p>🔴 flat 模式以前是纯装饰者：只改**已存在**条目的显示名/顺序，缺条目就
+     * {@code continue}。没装 TAB 时，其它子服的真人压根没有 tab 条目（Velocity
+     * 不合成全局列表），于是 flat / auto 模式看起来和原版一模一样 —— 只能看见本服的人。
+     * 现在缺条目就补，和 layout 走同一套补法（真 UUID + 真皮肤）。
+     */
+    boolean addStandIn(final Player viewer, final TabList tabList, final UUID uuid,
+                       final Component display, final int order, final boolean showHat) {
         final Player target = proxy.getPlayer(uuid).orElse(null);
         if (target == null) {
-            return false; // 人刚好下线：下一轮网格自己会收掉这格
+            return false; // 人刚好下线：下一轮自己会收掉这格
         }
         try {
             final TabListEntry entry = TabListEntry.builder()
                     .tabList(tabList)
                     .profile(target.getGameProfile())
-                    .displayName(Component.text(name == null ? target.getUsername() : name))
+                    .displayName(display == null ? Component.text(target.getUsername()) : display)
                     .latency((int) Math.round(target.getPing()))
                     .gameMode(0)
                     .listed(true)

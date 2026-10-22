@@ -22,10 +22,13 @@ final class FlatManager {
 
     private final ProxyServer proxy;
     private final Sorter sorter;
+    /** 补条目复用 layout 那套（真 UUID + 真皮肤），别再写第二份。 */
+    private final LayoutManager standIns;
 
-    FlatManager(final ProxyServer proxy, final Sorter sorter) {
+    FlatManager(final ProxyServer proxy, final Sorter sorter, final LayoutManager standIns) {
         this.proxy = proxy;
         this.sorter = sorter;
+        this.standIns = standIns;
     }
 
     void applyAll(final Configuration cfg) {
@@ -41,9 +44,21 @@ final class FlatManager {
         for (final Player viewer : proxy.getAllPlayers()) {
             final TabList tabList = viewer.getTabList();
             for (final Player p : proxy.getAllPlayers()) {
-                final TabListEntry entry = tabList.getEntry(p.getUniqueId()).orElse(null);
+                TabListEntry entry = tabList.getEntry(p.getUniqueId()).orElse(null);
                 if (entry == null) {
-                    continue;
+                    // 🔴 没条目 = 这个人在别的子服（Velocity 不合成全局列表，条目都是
+                    // 后端发的）。flat 以前在这里 continue，于是没装 TAB 时只能看见
+                    // 本服的人，整个列表看起来就是原版 —— auto 模式人少走 flat 时
+                    // 最容易撞上。补一条真 UUID + 真皮肤的条目即可。
+                    final int initial = orders == null ? 0 : orders.getOrDefault(p.getUniqueId(), 0);
+                    if (!standIns.addStandIn(viewer, tabList, p.getUniqueId(),
+                            names.get(p.getUniqueId()), initial, cfg.showHat())) {
+                        continue; // 人刚好下线
+                    }
+                    entry = tabList.getEntry(p.getUniqueId()).orElse(null);
+                    if (entry == null) {
+                        continue;
+                    }
                 }
                 if (orders != null) {
                     final int want = orders.getOrDefault(p.getUniqueId(), 0);
