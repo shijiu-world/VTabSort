@@ -43,7 +43,7 @@ import java.util.regex.Pattern;
  * <ol>
  *   <li>{@code player:<名字>} —— 自动去 Mojang API 取（带有效签名），结果落盘缓存；
  *       reload 时重新拉一遍。</li>
- *   <li>纹理哈希（裸 64 位十六进制 / {@code texture:<哈希>} / textures 完整 URL）</li>
+ *   <li>纹理哈希（裸十六进制（通常 64 位，偶尔 63 位）/ {@code texture:<哈希>} / textures 完整 URL）</li>
  *   <li>完整的 base64 value（可配 signature）</li>
  *   <li>留空 = 用上一级的皮肤 / 默认 Steve-Alex</li>
  * </ol>
@@ -78,8 +78,16 @@ final class SkinCache {
     private static final Pattern P_ID = Pattern.compile("\"id\"\\s*:\\s*\"([^\"]+)\"");
     private static final Pattern P_VALUE = Pattern.compile("\"value\"\\s*:\\s*\"([^\"]+)\"");
     private static final Pattern P_SIG = Pattern.compile("\"signature\"\\s*:\\s*\"([^\"]+)\"");
-    /** 纹理哈希：64 位十六进制。 */
-    private static final String HASH = "[0-9a-fA-F]{64}";
+    /**
+     * 纹理哈希：十六进制串。
+     *
+     * <p>🔴 长度**不能写死 64** —— Mojang 那边的条目是按内容寻址的哈希，
+     * 偶尔会出现 **63 位**（实测 `632e7a90…d016e` 这种，补 0 成 64 反而 404，
+     * 说明 63 才是真长度）。长度卡死 64 会让这类皮肤被判成"不是哈希"、
+     * 当 base64 解不开、最终静默退回默认 Steve。宽松取 32~80 位：真人皮肤
+     * 哈希是 64 位，base64 value 则是几百位，两者不会误撞。
+     */
+    private static final String HASH = "[0-9a-fA-F]{32,80}";
     private static final String SKIN_URL = "http://textures.minecraft.net/texture/";
     private static final String PREFIX_PLAYER = "player:";
 
