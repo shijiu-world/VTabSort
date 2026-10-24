@@ -17,7 +17,9 @@ final class LayoutModel {
      * 一个槽位：要么真实玩家，要么假条目文本（含空白填充）。
      *
      * @param player  真实玩家的 UUID；null = 假条目槽
-     * @param display 假条目的显示名；真实玩家槽为 null（显示名归 TAB 管）
+     * @param display 这个槽位**要写进去的显示名**：假条目 = 列头/占位文本；
+     *                真实玩家 = 前缀 + 名字，而没配前缀（{@code [layout].prefix-format}
+     *                为空）时是 null —— 表示**不碰**显示名，归 TAB / 原版管。
      * @param name    占这个位子的人名（真实玩家 / demo 虚拟玩家）；纯填充槽为 null。
      *                🔴 真玩家的 tab 条目由 TAB 创建，事件瞬间可能还没建出来 ——
      *                那时用同名假条目**临时占位**，否则网格会缺一格、

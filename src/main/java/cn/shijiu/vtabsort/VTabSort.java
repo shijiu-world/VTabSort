@@ -79,6 +79,15 @@ public final class VTabSort {
      * —— auto 模式下配置没变但落地模式会变。
      */
     private final AtomicReference<Configuration.Mode> appliedMode = new AtomicReference<>();
+    /**
+     * {@code /vts mode} 切出来的运行时模式（null = 用 config.toml 里的）。
+     *
+     * <p>为什么要有它：写文件之后如果还等文件 mtime 触发重载，中间会有一瞬间
+     * 用的还是旧模式；而且文件万一写不进去（只读/占用），命令也不该白敲。
+     * 覆盖只在本次运行有效 —— {@link #reload} 会清掉它（文件才是唯一真相，
+     * 命令成功时已经把新值写回文件了）。
+     */
+    private volatile Configuration.Mode modeOverride;
     /** demo 虚拟玩家模拟器（/vts demo）。 */
     private final DemoSim demo = new DemoSim();
     /** 流动模拟的定时任务（/vts demo off 时取消）。 */
@@ -155,7 +164,7 @@ public final class VTabSort {
     private void rebuildNow() {
         final Configuration cfg = config;
         // demo 虚拟玩家计入 auto 的翻面判定（模拟人多时的行为才算数）
-        final Configuration.Mode effective = cfg.effectiveMode(proxy.getPlayerCount() + demo.virtualCount());
+        final Configuration.Mode effective = effectiveMode(cfg, online());
         final Configuration.Mode previous = appliedMode.getAndSet(effective);
         if (previous != null && previous != effective) {
             if (effective == Configuration.Mode.LAYOUT) {
@@ -172,6 +181,70 @@ public final class VTabSort {
         // header/footer 与展示模式无关：每轮都刷（%ping%/%online%/%server% 会变），
         // 内部全 diff —— 渲染结果没变就不发包。
         headerFooter.applyAll(cfg, demo.virtualCount(), demo.countsByServer());
+    }
+
+    // ------------------------------------------------------------------
+    // 模式解析（config.toml + /vts mode 的运行时覆盖）
+    // ------------------------------------------------------------------
+
+    /** 在线人数（含 /vts demo 的虚拟玩家）—— auto 翻面判定和 %online% 用的是同一个数。 */
+    private int online() {
+        return proxy.getPlayerCount() + demo.virtualCount();
+    }
+
+    /** 配置里写的模式，被 {@code /vts mode} 覆盖时以覆盖为准。 */
+    private Configuration.Mode configuredMode(final Configuration cfg) {
+        final Configuration.Mode override = modeOverride;
+        return override != null ? override : cfg.mode();
+    }
+
+    /** 真正落地的模式：auto 按在线人数翻面，其余原样。 */
+    private Configuration.Mode effectiveMode(final Configuration cfg, final int onlineCount) {
+        final Configuration.Mode mode = configuredMode(cfg);
+        if (mode != Configuration.Mode.AUTO) {
+            return mode;
+        }
+        return onlineCount <= cfg.rows() ? Configuration.Mode.FLAT : Configuration.Mode.LAYOUT;
+    }
+
+    /**
+     * {@code /vts mode [layout|flat|auto]}：切排列模式。
+     *
+     * <p>两件事一起做：①运行时覆盖 → 立刻生效（rebuildNow 会顺手清掉对家留下的
+     * 假条目/前缀）；②把 {@code [display].mode} 写回 config.toml —— 重启、热重载
+     * 之后还是这个模式。写文件只动那一行，注释和其它配置原样保留。
+     */
+    private void switchMode(final CommandSource source, final String raw) {
+        if (raw == null || raw.isEmpty()) {
+            final Configuration cfg = config;
+            send(source, "当前模式：" + configuredMode(cfg).key()
+                    + (cfg.mode() == Configuration.Mode.AUTO
+                            ? "（配置 auto，在线 " + online() + " 人 → 实际 "
+                                    + effectiveMode(cfg, online()).key() + "）"
+                            : "")
+                    + "；切换：/vts mode layout|flat|auto");
+            return;
+        }
+        final Configuration.Mode want = switch (raw.toLowerCase(Locale.ROOT)) {
+            case "layout" -> Configuration.Mode.LAYOUT;
+            case "flat" -> Configuration.Mode.FLAT;
+            case "auto" -> Configuration.Mode.AUTO;
+            default -> null;
+        };
+        if (want == null) {
+            send(source, "没有这个模式：" + raw + "（只有 layout / flat / auto）");
+            return;
+        }
+        modeOverride = want;
+        rebuildNow(); // 立刻生效（模式翻面时清对家痕迹的逻辑在 rebuildNow 里）
+        final String error = Configuration.writeMode(dataDirectory, want);
+        if (error == null) {
+            lastModified = configMtime(); // 自己写的，别让自动重载当成外部改动再读一遍
+            send(source, "已切到 " + want.key() + "，并写回 config.toml（重启后仍然是这个模式）");
+        } else {
+            send(source, "已切到 " + want.key() + "，但 config.toml 没写进去（" + error
+                    + "）—— 本次运行有效，重启或 reload 后会回到文件里的模式。");
+        }
     }
 
     // ------------------------------------------------------------------
@@ -210,6 +283,13 @@ public final class VTabSort {
                     }
                     printLayout(source);
                 }
+                case "mode" -> {
+                    if (!source.hasPermission("vtabsort.reload")) {
+                        send(source, config.message("no-permission"));
+                        return;
+                    }
+                    switchMode(source, args.length >= 2 ? args[1] : "");
+                }
                 case "demo" -> {
                     if (!source.hasPermission("vtabsort.reload")) {
                         send(source, config.message("no-permission"));
@@ -226,7 +306,11 @@ public final class VTabSort {
         @Override
         public List<String> suggest(final Invocation invocation) {
             if (invocation.arguments().length <= 1) {
-                return List.of("reload", "layout", "demo", "version");
+                return List.of("reload", "mode", "layout", "demo", "version");
+            }
+            if (invocation.arguments().length == 2
+                    && "mode".equalsIgnoreCase(invocation.arguments()[0])) {
+                return List.of("layout", "flat", "auto");
             }
             return List.of();
         }
@@ -248,7 +332,7 @@ public final class VTabSort {
         final String op = args.length >= 2 ? args[1].toLowerCase(Locale.ROOT) : "";
         // flat 模式下开模拟没意义（网格都看不到），但「off」必须随时能用
         // —— 否则切到 flat 之后就再也关不掉一个正在跑的流动模拟了。
-        if (config.mode() == Configuration.Mode.FLAT && !"off".equals(op)) {
+        if (configuredMode(config) == Configuration.Mode.FLAT && !"off".equals(op)) {
             send(source, "当前是 flat 模式，网格看不到 —— 先切 layout/auto 再 demo。");
             return;
         }
@@ -336,9 +420,10 @@ public final class VTabSort {
     /** 无客户端也能核对布局：把当前网格的分列模型打给命令发起者。 */
     private void printLayout(final CommandSource source) {
         final Configuration cfg = config;
-        final Configuration.Mode effective = cfg.effectiveMode(proxy.getPlayerCount() + demo.virtualCount());
-        if (cfg.mode() == Configuration.Mode.AUTO) {
-            send(source, "auto 模式：在线 " + (proxy.getPlayerCount() + demo.virtualCount())
+        final int online = online();
+        final Configuration.Mode effective = effectiveMode(cfg, online);
+        if (configuredMode(cfg) == Configuration.Mode.AUTO) {
+            send(source, "auto 模式：在线 " + online
                     + " 人（含模拟），阈值 " + cfg.rows() + " → 当前落地 " + effective.key());
         }
         if (demo.isActive()) {
@@ -353,7 +438,8 @@ public final class VTabSort {
         send(source, "layout 网格：" + model.columnCount + " 列 × " + model.rows
                 + " 行（行数上限 " + cfg.rows() + "，列预算 " + cfg.maxColumns()
                 + (model.exceedsColumns ? "，内容塞不下已超列预算" : "")
-                + "），槽位 " + model.slots.size() + "，隐藏 " + model.hidden.size());
+                + "），槽位 " + model.slots.size() + "，隐藏 " + model.hidden.size()
+                + (cfg.layoutPrefix().isEmpty() ? "" : "，玩家前缀 " + cfg.layoutPrefix()));
         for (int i = 0; i < model.columns.size(); i++) {
             final StringBuilder sb = new StringBuilder("列" + (i + 1) + "：");
             for (final LayoutModel.SectionDesc sd : model.columns.get(i).sections) {
@@ -368,14 +454,15 @@ public final class VTabSort {
         }
     }
 
-    /** 起服/重载时打的那行模式说明。 */
+    /** 起服/重载/切模式时打的那行模式说明。 */
     private String describeMode(final Configuration cfg) {
-        return switch (cfg.mode()) {
-            case LAYOUT -> "模式 layout（固定网格，列头=子服名，人数降序分列，超高续列）";
+        final int online = online();
+        return switch (configuredMode(cfg)) {
+            case LAYOUT -> "模式 layout（固定网格，列头=子服名，人数降序分列，超高续列"
+                    + (cfg.layoutPrefix().isEmpty() ? "）" : "，玩家前缀 " + cfg.layoutPrefix() + "）");
             case FLAT -> "模式 flat（前缀列表" + (cfg.flatSort() ? "，按人数降序排序" : "，原版顺序") + "）";
             case AUTO -> "模式 auto（≤" + cfg.rows() + " 人走 flat，超过走 layout）"
-                    + "；当前在线 " + proxy.getPlayerCount() + " → "
-                    + cfg.effectiveMode(proxy.getPlayerCount()).key();
+                    + "；当前在线 " + online + " → " + effectiveMode(cfg, online).key();
         };
     }
 
@@ -396,8 +483,16 @@ public final class VTabSort {
             }
             return;
         }
+        final Configuration previous = config;
         config = result.config();
+        // 文件是唯一真相：/vts mode 成功时已经把新值写回文件了，覆盖到这里作废。
+        modeOverride = null;
         lastModified = configMtime();
+        // layout 玩家前缀改了（加了或删了）：先把显示名打回裸名，让下面重建时
+        // 干净地写一遍 —— 显示名能改，但删前缀之后旧前缀会一直挂在条目上。
+        if (!previous.layoutPrefix().equals(config.layoutPrefix())) {
+            flatManager.resetDisplayNames();
+        }
         // 皮肤：三档 —— 占位皮肤（填充假人）/ 默认列头头像 / 各子服列头头像。
         // 非 player: 写法同步算出来；player: 先用磁盘缓存顶上、后台再拉一次
         // （拉到后回调 → 拔掉旧假条目重建，让新皮肤立刻生效）。

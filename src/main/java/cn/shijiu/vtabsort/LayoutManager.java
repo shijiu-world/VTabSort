@@ -77,6 +77,22 @@ final class LayoutManager {
      */
     private final Set<UUID> standins = ConcurrentHashMap.newKeySet();
 
+    /** 「还没进子服」那组的内部键（空串；显示名走 {@code [servers.names].loading}）。 */
+    private static final String LOADING_KEY = "";
+
+    /**
+     * 每个玩家最后一次**已知**的延迟（毫秒）。
+     *
+     * <p>🔴 {@code Player#getPing()} 在延迟还没测出来时返回 <b>-1</b>（Velocity 的
+     * 「未知」约定）。而我们把这个值原样写进 TabListEntry 时，客户端会因为
+     * {@code latency < 0} 画成「无信号」——就是玩家名字右边那个**红叉**。
+     * 刚进服 / 刚切服的那几秒最容易撞上，而且我们补建的条目以前从不刷新延迟，
+     * 一旦写进 -1 就永远挂着红叉。
+     *
+     * <p>所以这里缓存最后一个有效值：拿不到就用它顶，一个都没有才用 0。
+     */
+    private final Map<UUID, Integer> lastPing = new ConcurrentHashMap<>();
+
     LayoutManager(final ProxyServer proxy, final Sorter sorter, final SkinCache skins) {
         this.proxy = proxy;
         this.sorter = sorter;
@@ -96,13 +112,20 @@ final class LayoutManager {
      *             虚拟玩家与真人混进同一套分节/排序/填槽逻辑，走的全是真实代码路径。
      */
     LayoutModel build(final Configuration cfg, final Map<String, List<TabUser>> demo) {
-        // 1) 玩家按子服分组；还没进任何服的（连接中）稍后隐藏
+        // 1) 玩家按子服分组；还没进任何服的（连接中）按 hide-loading 决定藏还是单独一节
         final Map<String, List<TabUser>> byServer = new LinkedHashMap<>();
         final List<Player> noServer = new ArrayList<>();
         for (final Player p : proxy.getAllPlayers()) {
             final String s = serverOf(p);
             if (s.isEmpty()) {
-                noServer.add(p);
+                if (cfg.hideLoading()) {
+                    noServer.add(p);
+                    continue;
+                }
+                // hide-loading=false：塞进 "" 组，单开一节「加载中」放在最后
+                byServer.computeIfAbsent(LOADING_KEY, k -> new ArrayList<>())
+                        .add(new TabUser(p.getUniqueId(), p.getUsername(),
+                                sorter.joinSeqOf(p.getUniqueId())));
                 continue;
             }
             byServer.computeIfAbsent(s, k -> new ArrayList<>())
@@ -135,7 +158,8 @@ final class LayoutManager {
         for (final String s : servers) {
             final List<TabUser> ps = new ArrayList<>(byServer.get(s));
             ps.sort(pc);
-            secs.add(new Sec(s, cfg.serverDisplayName(s), ps));
+            // 加载中那一节用 [servers.names].loading 的文案（默认「加载中」）
+            secs.add(new Sec(s, s.isEmpty() ? cfg.loadingDisplayName() : cfg.serverDisplayName(s), ps));
         }
         // 人数降序（平手按服名升序）——这就是列的左右顺序
         secs.sort(Comparator.comparingInt((Sec s) -> -s.count()).thenComparing(s -> s.server));
@@ -320,11 +344,15 @@ final class LayoutManager {
             placed++;
             for (int k = part.from(); k < part.to(); k++) {
                 final TabUser u = sec.players.get(k);
+                // 玩家前缀（[layout].prefix-format）。没配 = null = 不碰显示名
+                final Component prefixed = playerDisplay(cfg, sec, u.name());
                 if (u.virtual()) {
-                    // demo 虚拟玩家：走假条目路径，显示名 = 名字（和真人观感一致）
-                    slots.add(new LayoutModel.Slot(null, Component.text(u.name()), u.name()));
+                    // demo 虚拟玩家：走假条目路径，显示名 = 名字（配了前缀就一起带上，
+                    // 和真人的观感一致）
+                    slots.add(new LayoutModel.Slot(null,
+                            prefixed != null ? prefixed : Component.text(u.name()), u.name()));
                 } else {
-                    slots.add(new LayoutModel.Slot(u.uuid(), null, u.name()));
+                    slots.add(new LayoutModel.Slot(u.uuid(), prefixed, u.name()));
                 }
                 placed++;
             }
@@ -340,6 +368,22 @@ final class LayoutManager {
             slots.add(new LayoutModel.Slot(null, Component.empty(), null));
         }
         colDescs.add(new LayoutModel.ColumnDesc(sds));
+    }
+
+    /**
+     * layout 模式下玩家名字的显示组件（{@code [layout].prefix-format}）。
+     *
+     * @param sec 这个人所在的子服分节（{@code #name#} 换成它的显示名）
+     * @return <b>null = 没配前缀</b>，调用方据此「不碰显示名」（归 TAB / 原版管）。
+     *         这是单写者铁律：TAB 也写 tablist-name-formatting 的话，两边同时写
+     *         会让玩家看到前缀来回闪。
+     */
+    private static Component playerDisplay(final Configuration cfg, final Sec sec, final String name) {
+        final String format = cfg.layoutPrefix();
+        if (format.isEmpty()) {
+            return null;
+        }
+        return Colors.prefixed(format.replace("#name#", sec.display), name);
     }
 
     // ------------------------------------------------------------------
@@ -371,11 +415,18 @@ final class LayoutManager {
             final UUID fakeId = fakeUuid(i);
             if (slot.player != null) {
                 final TabListEntry entry = tabList.getEntry(slot.player).orElse(null);
+                // 玩家前缀：null = 没配（不动显示名）——见 playerDisplay
+                final Component wantName = slot.display;
                 if (entry != null) {
                     // 真条目在：它自己（或我们补的那条）占着这格，补位记录清掉
                     standins.remove(slot.player);
                     removeFake(tabList, fakeId); // 老版本可能在这格留了占位假条目
                     applySlotState(entry, order, cfg.showHat());
+                    if (wantName != null
+                            && !Objects.equals(entry.getDisplayNameComponent().orElse(null), wantName)) {
+                        setDisplay(entry, wantName);
+                    }
+                    applyPing(viewer, entry, slot.player);
                 } else {
                     removeFake(tabList, fakeId);
                     // 🔴 真条目还没建出来（其它子服的玩家 / 事件竞态）：
@@ -383,11 +434,11 @@ final class LayoutManager {
                     //    客户端看到的就是本人；实在拿不到（人刚好下线）才退化成
                     //    同名假条目占位 —— 那格不补的话总条目少 1，客户端折行
                     //    重算会把整列挤歪。
-                    if (!addStandIn(viewer, tabList, slot.player, slot.name, order,
+                    final Component standInName = wantName != null
+                            ? wantName : Component.text(slot.name == null ? "" : slot.name);
+                    if (!addStandIn(viewer, tabList, slot.player, standInName, order,
                             cfg.showHat())) {
-                        final Component placeholder =
-                                Component.text(slot.name == null ? "" : slot.name);
-                        addFake(tabList, i, order, placeholder, cfg, null);
+                        addFake(tabList, i, order, standInName, cfg, null, cfg.blankPing());
                     }
                 }
             } else {
@@ -398,7 +449,8 @@ final class LayoutManager {
                 //    不然列头头像会一直挂着上一个服的皮。
                 if (entry == null || !skinMatches(entry, slot.server)) {
                     removeFake(tabList, fakeId);
-                    addFake(tabList, i, order, slot.display, cfg, slot.server);
+                    // 列头的信号延迟单独配（[layout].header-ping），不跟填充假人共用
+                    addFake(tabList, i, order, slot.display, cfg, slot.server, cfg.headerPing());
                 } else {
                     if (!Objects.equals(entry.getDisplayNameComponent().orElse(null), slot.display)) {
                         setDisplay(entry, slot.display);
@@ -423,8 +475,49 @@ final class LayoutManager {
         }
     }
 
-    /** 拔掉某一格上可能残留的占位假条目（换用真人 profile 之后要清）。 */
-    private static void removeFake(final TabList tabList, final UUID fakeId) {
+    /**
+     * 延迟的显示值。
+     *
+     * <p>🔴 {@code getPing()} 在「还没测出来」时返回 <b>-1</b>，直接写进条目
+     * 客户端会画成无信号图标（名字右边那个红叉）。拿不到就退回上一个已知值，
+     * 一次都没有才用 0（0ms 在客户端是满格，至少不吓人）。
+     */
+    private int pingOf(final Player p) {
+        final int raw = (int) Math.round(p.getPing());
+        if (raw < 0) {
+            return lastPing.getOrDefault(p.getUniqueId(), 0);
+        }
+        lastPing.put(p.getUniqueId(), raw);
+        return raw;
+    }
+
+    /**
+     * 把延迟同步到条目上 —— 但只碰「该我们管」的，避免和后端打架。
+     *
+     * <p>同一后端服的玩家，条目延迟由后端自己发（我们改也会被覆盖，还可能来回抖）；
+     * 只有两种情况需要动手：① 当前值是负的（红叉，必须修）；② 对方在别的子服
+     * —— 那种条目是本插件补的，没有别人会去更新它，所以永远停在刚建时的值。
+     */
+    private void applyPing(final Player viewer, final TabListEntry entry, final UUID uuid) {
+        final Player target = proxy.getPlayer(uuid).orElse(null);
+        if (target == null) {
+            return;
+        }
+        final int want = pingOf(target);
+        if (entry.getLatency() == want) {
+            return;
+        }
+        final boolean sameServer = serverOf(target).equals(serverOf(viewer));
+        if (sameServer && entry.getLatency() >= 0) {
+            return; // 后端的值说了算
+        }
+        try {
+            entry.setLatency(want);
+        } catch (final Exception ignored) {
+        }
+    }
+
+    /** 拔掉某一格上可能残留的占位假条目（换用真人 profile 之后要清）。 */    private static void removeFake(final TabList tabList, final UUID fakeId) {
         if (tabList.containsEntry(fakeId)) {
             try {
                 tabList.removeEntry(fakeId);
@@ -454,7 +547,8 @@ final class LayoutManager {
     }
 
     /**
-     * 用真人自己的 profile 补一条 Tab 条目（真 UUID + 真皮肤）。
+     * 用真人自己的 profile 补一条 Tab 条目（真 UUID + 真皮肤），显示名由调用方给
+     * （layout 带玩家前缀、flat 带子服前缀）。
      *
      * <p>🔴 为什么必须这么做：没装 TAB 时，客户端的 Tab 里只有「同一个后端服」
      * 的玩家（Velocity 不合成全局列表，条目都是后端发的）。其它子服的真人
@@ -464,20 +558,6 @@ final class LayoutManager {
      * 同一个 UUID，不会变成两条重名。
      *
      * @return 补成功了没（false = 人已经不在了，调用方退化成假条目占位）
-     */
-    private boolean addStandIn(final Player viewer, final TabList tabList, final UUID uuid,
-                               final String name, final int order, final boolean showHat) {
-        return addStandIn(viewer, tabList, uuid,
-                name == null ? null : Component.text(name), order, showHat);
-    }
-
-    /**
-     * 同上，但显示名由调用方给（flat 模式要带子服前缀）。
-     *
-     * <p>🔴 flat 模式以前是纯装饰者：只改**已存在**条目的显示名/顺序，缺条目就
-     * {@code continue}。没装 TAB 时，其它子服的真人压根没有 tab 条目（Velocity
-     * 不合成全局列表），于是 flat / auto 模式看起来和原版一模一样 —— 只能看见本服的人。
-     * 现在缺条目就补，和 layout 走同一套补法（真 UUID + 真皮肤）。
      */
     boolean addStandIn(final Player viewer, final TabList tabList, final UUID uuid,
                        final Component display, final int order, final boolean showHat) {
@@ -490,7 +570,7 @@ final class LayoutManager {
                     .tabList(tabList)
                     .profile(target.getGameProfile())
                     .displayName(display == null ? Component.text(target.getUsername()) : display)
-                    .latency((int) Math.round(target.getPing()))
+                    .latency(pingOf(target))
                     .gameMode(0)
                     .listed(true)
                     .listOrder(order)
@@ -511,6 +591,7 @@ final class LayoutManager {
      * 同一个条目，那时 {@code standins} 里已经没有它了，不会被误删。
      */
     void forget(final UUID uuid) {
+        lastPing.remove(uuid);
         if (!standins.remove(uuid)) {
             return;
         }
@@ -526,13 +607,14 @@ final class LayoutManager {
     }
 
     private void addFake(final TabList tabList, final int slot, final int order,
-                         final Component display, final Configuration cfg, final String server) {
+                         final Component display, final Configuration cfg, final String server,
+                         final int ping) {
         try {
             final TabListEntry entry = TabListEntry.builder()
                     .tabList(tabList)
                     .profile(fakeProfile(slot, server))
                     .displayName(display)
-                    .latency(cfg.blankPing())
+                    .latency(ping)
                     .gameMode(0)
                     .listed(true)
                     .listOrder(order)

@@ -4,9 +4,11 @@ import org.slf4j.Logger;
 
 import java.io.IOException;
 import java.io.InputStream;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
@@ -67,8 +69,26 @@ public final class Configuration {
     private final int maxColumns;
     private final int rows;
     private final String headerFormat;
+    /**
+     * layout 模式下<b>玩家名字</b>的前缀（{@code [layout].prefix-format}，默认空）。
+     *
+     * <p>和 flat 的 {@code [flat].prefix-format} 各管一段：这个只作用于网格里的
+     * 玩家名（列头仍由 {@link #headerFormat} 管）。留空 = 完全不碰显示名
+     * —— 显示名归 TAB / 原版管（单写者铁律：TAB 也写 tablist-name-formatting 时
+     * 两边会互相覆盖，出现前缀来回闪）。所以装了 TAB 就保持空。
+     */
+    private final String layoutPrefix;
     private final boolean separator;
     private final int blankPing;
+    /**
+     * 列头（子服名那一行）右边那个信号图标显示的延迟（{@code [layout].header-ping}）。
+     *
+     * <p>列头是假条目，没有真实玩家，延迟只能给个死值。以前跟填充假人共用
+     * {@code blank-ping}，服主想把列头单独调成「满信号」或「红叉」就得连
+     * 填充假人一起改 —— 现在拆成两个全局值（不做按子服单独配，那个没用）。
+     * 没写这个键时沿用 {@code blank-ping}，老配置观感不变。
+     */
+    private final int headerPing;
     /**
      * 皮肤<b>第二层</b>（帽子层 / 1.21.4+ 协议里的 showHat）要不要渲染。
      *
@@ -100,10 +120,23 @@ public final class Configuration {
     private final boolean headerFooterEnabled;
     private final List<String> headerLines;
     private final List<String> footerLines;
+    /**
+     * 隐藏「正在加载中」的玩家（{@code [display].hide-loading}）。
+     *
+     * <p>判定只有一条：{@code Player#getCurrentServer()} 为空 —— 刚连上代理还没进
+     * 任何子服、或者正在切服的那一瞬。这种人在客户端里就是半成品（皮肤可能还没
+     * 到位、延迟未知），放在网格里还会因为「没有子服分节」而无处安放。
+     *
+     * <p>layout 早期是**写死**隐藏的；现在提成开关，flat 也一起支持（flat 以前
+     * 照旧显示，因为它们会被塞进 {@code ""} 组排到最后）。
+     */
+    private final boolean hideLoading;
 
     private Configuration(final Mode mode, final int maxColumns, final int rows,
-                          final String headerFormat, final boolean separator,
-                          final int blankPing, final boolean showHat, final String skinSpec,
+                          final String headerFormat, final String layoutPrefix,
+                          final boolean separator,
+                          final int blankPing, final int headerPing,
+                          final boolean showHat, final String skinSpec,
                           final String skinSignature,
                           final String columnSkin, final String columnSkinSignature,
                           final Map<String, String> serverSkins,
@@ -115,13 +148,16 @@ public final class Configuration {
                           final boolean autoReload, final int autoReloadIntervalSeconds,
                           final int refreshDelayMs, final int reassertSeconds,
                           final boolean headerFooterEnabled,
-                          final List<String> headerLines, final List<String> footerLines) {
+                          final List<String> headerLines, final List<String> footerLines,
+                          final boolean hideLoading) {
         this.mode = mode;
         this.maxColumns = maxColumns;
         this.rows = rows;
         this.headerFormat = headerFormat;
+        this.layoutPrefix = layoutPrefix;
         this.separator = separator;
         this.blankPing = blankPing;
+        this.headerPing = headerPing;
         this.showHat = showHat;
         this.skinSpec = skinSpec;
         this.skinSignature = skinSignature;
@@ -141,6 +177,7 @@ public final class Configuration {
         this.headerFooterEnabled = headerFooterEnabled;
         this.headerLines = headerLines;
         this.footerLines = footerLines;
+        this.hideLoading = hideLoading;
     }
 
     public static Configuration defaults() {
@@ -157,34 +194,27 @@ public final class Configuration {
         messages.put("reloaded", "配置已重新加载，Tab 已刷新");
         messages.put("reload-failed", "配置加载失败，用的还是旧配置，原因：#reason#");
         messages.put("no-permission", "你没有权限这么做");
-        messages.put("usage", "用法：/vtabsort reload | layout | demo | version");
+        messages.put("usage", "用法：/vtabsort reload | mode <layout|flat|auto> | layout | demo | version");
         return new Configuration(Mode.LAYOUT, 4, 20,
-                "&e#name# &7· #count#", true,
-                0, true, "", "", "", "", Map.of(), Map.of(),
+                "&e#name# &7· #count#", "", true,
+                0, 0, true, "", "", "", "", Map.of(), Map.of(),
                 "&7[&e#name#&7] ", true,
                 names, false, messages,
                 false, 3, 200, 3,
                 true,
                 List.of("&e欢迎来到 &6拾玖世界", "&7在线 &f%online% &7人 · 当前 &f%server%"),
-                List.of("&7延迟 &#9adbc5%ping% &7ms"));
-    }
-
-    /** 配置里写的模式（可能是 auto）。 */
-    public Mode mode() {
-        return mode;
+                List.of("&7延迟 &#9adbc5%ping% &7ms"),
+                true);
     }
 
     /**
-     * auto 模式的落地：在线人数 ≤ rows（客户端拆第二列的阈值）走 flat，
-     * 超了走 layout。非 auto 模式原样返回。
+     * 配置里写的模式（可能是 auto）。
      *
-     * @param onlineCount 当前在线人数（含还在连接中的）
+     * <p>⚠️ 别直接拿它当"现在用哪个模式"——{@code /vts mode} 有运行时覆盖，
+     * 而且 auto 还要按在线人数翻面。落地判定统一在 {@code VTabSort#effectiveMode}。
      */
-    public Mode effectiveMode(final int onlineCount) {
-        if (mode != Mode.AUTO) {
-            return mode;
-        }
-        return onlineCount <= rows ? Mode.FLAT : Mode.LAYOUT;
+    public Mode mode() {
+        return mode;
     }
 
     public int maxColumns() {
@@ -200,12 +230,25 @@ public final class Configuration {
         return headerFormat;
     }
 
+    /**
+     * layout 模式下玩家名字的前缀（默认空 = 不碰显示名）。{@code #name#} 换成
+     * 该玩家所在子服的显示名；其余写法同 flat 前缀（&amp; 码 / &amp;#hex / 渐变）。
+     */
+    public String layoutPrefix() {
+        return layoutPrefix;
+    }
+
     public boolean separator() {
         return separator;
     }
 
     public int blankPing() {
         return blankPing;
+    }
+
+    /** 列头（子服名那一行）右边信号图标显示的延迟（毫秒）；没配时等于 blank-ping。 */
+    public int headerPing() {
+        return headerPing;
     }
 
     /** 皮肤第二层（帽子层）是否渲染。 */
@@ -265,6 +308,23 @@ public final class Configuration {
     /** 子服显示名（键已转小写）；没配的用服名原文。 */
     public String serverDisplayName(final String server) {
         return serverNames.getOrDefault(server, server);
+    }
+
+    /**
+     * 「加载中」那一组玩家的显示名（{@code hide-loading = false} 时 layout 会单开
+     * 一节放他们）。
+     *
+     * <p>名字取 {@code [servers.names].loading}，没配就用「加载中」—— 用同一个
+     * 配置段是为了让配色/文案跟别的子服一样好改（比如写
+     * {@code loading = "&#8f8f8f&l加载中"}）。
+     */
+    public String loadingDisplayName() {
+        return serverNames.getOrDefault("loading", "加载中");
+    }
+
+    /** 隐藏「还没进任何子服」的玩家（{@code [display].hide-loading}）。 */
+    public boolean hideLoading() {
+        return hideLoading;
     }
 
     /** 已知子服清单（[servers.names] 的键，已排序）——demo 模拟的玩家池。 */
@@ -342,15 +402,75 @@ public final class Configuration {
         logger.info("[vtabsort] 已生成默认配置文件：" + file.toAbsolutePath());
     }
 
+    /**
+     * 把 {@code [display].mode} 写回 config.toml（{@code /vtabsort mode} 用）。
+     *
+     * <p>只替换那一行（值换掉，行尾注释原样保留），文件里其它内容一个字符都不动
+     * —— 服主手写的注释/配色不能被插件覆盖掉。换行符按原文件的风格（CRLF/LF）。
+     *
+     * @return null = 写成功；非 null = 失败原因（命令里直接回报给服主）
+     */
+    public static String writeMode(final Path dataDirectory, final Mode mode) {
+        final Path file = dataDirectory.resolve("config.toml");
+        try {
+            final String text = Files.readString(file, StandardCharsets.UTF_8);
+            final String eol = text.contains("\r\n") ? "\r\n" : "\n";
+            final List<String> lines = new ArrayList<>(List.of(text.split("\r?\n", -1)));
+            final String fresh = "mode = \"" + mode.key() + "\"";
+            boolean inDisplay = false;
+            int insertAt = -1;
+            boolean done = false;
+            for (int i = 0; i < lines.size() && !done; i++) {
+                final String t = lines.get(i).trim();
+                if (t.startsWith("[") && t.endsWith("]")) {
+                    inDisplay = "[display]".equalsIgnoreCase(t);
+                    if (inDisplay) {
+                        insertAt = i + 1; // [display] 段里没有 mode 行就插在这
+                    }
+                    continue;
+                }
+                if (!inDisplay || t.isEmpty() || t.startsWith("#")) {
+                    continue;
+                }
+                final int eq = t.indexOf('=');
+                if (eq <= 0 || !"mode".equalsIgnoreCase(t.substring(0, eq).trim())) {
+                    continue;
+                }
+                final int hash = t.indexOf('#', eq + 1);
+                lines.set(i, hash >= 0 ? fresh + "   " + t.substring(hash) : fresh);
+                done = true;
+            }
+            if (!done) {
+                if (insertAt < 0) {
+                    lines.add("");
+                    lines.add("[display]");
+                    insertAt = lines.size();
+                }
+                lines.add(insertAt, fresh);
+            }
+            Files.writeString(file, String.join(eol, lines), StandardCharsets.UTF_8);
+            return null;
+        } catch (final IOException | RuntimeException e) {
+            return e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage();
+        }
+    }
+
     private static Configuration fromMap(final Map<String, Object> raw) {
         final Mode mode = Mode.parse(TomlLite.string(raw, "display.mode", "layout"));
+        // 还没进子服的玩家（刚连上 / 正在切服）默认不显示 —— layout 早期就是这么做的
+        final boolean hideLoading = TomlLite.bool(raw, "display.hide-loading", true);
 
         final int maxColumns = (int) clamp(TomlLite.integer(raw, "layout.max-columns", 4), 1, 10);
         final int rows = (int) clamp(TomlLite.integer(raw, "layout.rows", 20), 5, 40);
         final String headerFormat = TomlLite.string(raw, "layout.header-format",
                 defaults().headerFormat());
+        final String layoutPrefix = TomlLite.string(raw, "layout.prefix-format",
+                defaults().layoutPrefix());
         final boolean separator = TomlLite.bool(raw, "layout.separator", true);
         final int blankPing = (int) clamp(TomlLite.integer(raw, "layout.blank-ping", 0), 0, 60_000);
+        // 列头的信号延迟单独配（不写就跟着 blank-ping 走，老配置观感不变）
+        final int headerPing = (int) clamp(
+                TomlLite.integer(raw, "layout.header-ping", blankPing), 0, 60_000);
         final boolean showHat = TomlLite.bool(raw, "layout.show-hat", true);
         // 皮肤：这里只留原文，解析/联网/缓存交给 SkinCache
         final String skinSig = TomlLite.string(raw, "layout.default-skin-signature", "").trim();
@@ -422,12 +542,12 @@ public final class Configuration {
         final List<String> footer = TomlLite.list(raw, "header-footer.footer",
                 defaults().footerLines());
 
-        return new Configuration(mode, maxColumns, rows, headerFormat, separator,
-                blankPing, showHat, skinSpec, skinSig,
+        return new Configuration(mode, maxColumns, rows, headerFormat, layoutPrefix, separator,
+                blankPing, headerPing, showHat, skinSpec, skinSig,
                 columnSkin, columnSig, serverSkins, serverSigs, flatPrefix, flatSort,
                 names, byJoin, messages,
                 autoReload, interval, delay, reassert,
-                hfEnabled, header, footer);
+                hfEnabled, header, footer, hideLoading);
     }
 
     private static long clamp(final long v, final long min, final long max) {

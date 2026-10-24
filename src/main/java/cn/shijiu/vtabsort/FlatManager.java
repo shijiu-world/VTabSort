@@ -7,9 +7,11 @@ import com.velocitypowered.api.proxy.player.TabListEntry;
 import net.kyori.adventure.text.Component;
 
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.UUID;
 
 /**
@@ -35,15 +37,30 @@ final class FlatManager {
         final Map<UUID, Integer> orders = cfg.flatSort() ? sorter.computeOrders(cfg) : null;
         // 前缀显示名：同前缀对所有人一样，算一份全局复用
         final Map<UUID, Component> names = new HashMap<>();
+        // 「加载中」（还没进任何子服）的那批：hide-loading 开着就藏起来
+        final Set<UUID> loading = new HashSet<>();
         for (final Player p : proxy.getAllPlayers()) {
             final String s = serverOf(p);
-            if (!s.isEmpty()) {
-                names.put(p.getUniqueId(), prefixed(cfg, s, p.getUsername()));
+            if (s.isEmpty()) {
+                if (cfg.hideLoading()) {
+                    loading.add(p.getUniqueId());
+                }
+                continue;
             }
+            names.put(p.getUniqueId(), prefixed(cfg, s, p.getUsername()));
         }
         for (final Player viewer : proxy.getAllPlayers()) {
             final TabList tabList = viewer.getTabList();
             for (final Player p : proxy.getAllPlayers()) {
+                if (loading.contains(p.getUniqueId())) {
+                    // 藏：条目留着但不能显示（flat 没有网格可言，直接 listed=false 即
+                    // 从列表里消失；等它进了子服下一轮自然恢复）
+                    final TabListEntry le = tabList.getEntry(p.getUniqueId()).orElse(null);
+                    if (le != null && le.isListed()) {
+                        setListed(le, false);
+                    }
+                    continue;
+                }
                 TabListEntry entry = tabList.getEntry(p.getUniqueId()).orElse(null);
                 if (entry == null) {
                     // 🔴 没条目 = 这个人在别的子服（Velocity 不合成全局列表，条目都是
@@ -94,9 +111,7 @@ final class FlatManager {
 
     /** 前缀与名字做兄弟节点挂空父组件：前缀的颜色不会传染名字。 */
     private static Component prefixed(final Configuration cfg, final String server, final String username) {
-        final Component prefix = Colors.parse(
-                cfg.flatPrefix().replace("#name#", cfg.serverDisplayName(server)));
-        return Component.text().append(prefix).append(Component.text(username)).build();
+        return Colors.prefixed(cfg.flatPrefix().replace("#name#", cfg.serverDisplayName(server)), username);
     }
 
     private static String serverOf(final Player p) {

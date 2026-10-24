@@ -143,7 +143,8 @@ final class HeaderFooter {
                                           final int virtualTotal,
                                           final Map<String, Integer> virtualByServer) {
         final Map<String, String> vars = new HashMap<>();
-        final long ping = Math.round(viewer.getPing());
+        // 延迟未知时 Velocity 返回 -1，页脚显示 "-1 ms" 很怪 —— 按 0 显示
+        final long ping = Math.max(0L, Math.round(viewer.getPing()));
         vars.put("%player%", viewer.getUsername());
         vars.put("%ping%", String.valueOf(ping));
         vars.put("%online%", String.valueOf(proxy.getPlayerCount() + virtualTotal));

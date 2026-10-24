@@ -69,6 +69,21 @@ public final class Colors {
         return join(parts);
     }
 
+    /**
+     * 前缀（可空）+ 名字：两段挂在空父组件下做<b>兄弟节点</b> —— 前缀的颜色/
+     * 样式不会传染名字。flat 的前缀、layout 的玩家前缀都走这里。
+     *
+     * <p>前缀为空时只返回名字本身（= 不加前缀，调用方可以据此判断「要不要动
+     * 显示名」，layout 模式就是靠这个跟 TAB 划清边界的）。
+     */
+    static Component prefixed(final String prefix, final String name) {
+        final Component text = Component.text(name == null ? "" : name);
+        if (prefix == null || prefix.isEmpty()) {
+            return text;
+        }
+        return Component.text().append(parse(prefix)).append(text).build();
+    }
+
     /** 原样段 + 渐变段拼成一个组件（多段挂空父组件，样式互不传染）。 */
     private static Component join(final List<Component> parts) {
         if (parts.isEmpty()) {

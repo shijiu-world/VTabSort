@@ -1,95 +1,68 @@
 # ============================================================
-#  VTabSort v3 —— Tab 列表展示（Velocity 代理端，零依赖）
-#  三种模式（[display].mode 切换，改完 /vtabsort reload）：
-#    layout = Hypixel 式固定网格：每列头顶子服名、假人补满。
-#             列的左右顺序 = 子服人数降序；一个子服装不下一列就
-#             续开一列（列头不变）；列不够时小服并进最后一列。
-#    flat   = 普通列表：名字前缀子服名 + 可选按人数降序排序
-#    auto   = 自适应：在线人数 ≤ [layout].rows 时走 flat，
-#             超过走 layout（人少不铺假人，人多才上网格）
-#  原理：1.21.2+ 协议字段 listOrder（客户端原生排序）+ 假条目，
-#        不碰 scoreboard team —— 小游戏藏名字不受影响。
-#  ⚠️ # 后面是注释；没加引号的值不要在同一行再写 #。
+#  VTabSort —— Tab 列表展示（Velocity 代理端，零依赖）
+#  三个模式（[display].mode，也可以用 /vts mode <layout|flat|auto> 切）：
+#    layout = 固定网格：每列头顶子服名，假人补满空槽
+#    flat   = 普通列表：名字前缀子服名 + 可选按人数排序
+#    auto   = 在线 ≤ [layout].rows 走 flat，超过走 layout
+#  实现：1.21.2+ 的 listOrder 协议字段 + 假条目，不碰 scoreboard team。
+#  ⚠️ # 之后是注释；没加引号的值不要在同一行再写 #。
 # ============================================================
 
 [display]
-mode = "auto"        # layout | flat | auto
+mode = "auto"          # layout | flat | auto（/vts mode 切换会写回这一行）
+hide-loading = true    # 隐藏「还没进任何子服」的玩家（刚连上、切服那一瞬）。
+                       #   false = 照样显示，layout 会单开一节「加载中」放最后，
+                       #   节名取 [servers.names] 里的 loading。
 
 # ------------------------------------------------------------
-# layout 模式（auto 落地到 layout 时同样生效）
-#   rows = 客户端每列行数上限（原版 20），同时是 auto 模式的切换阈值。
-#          网格实际行数自适应：取「内容需要的高度」与「让客户端开出
-#          N 列所需的最小行数」（4 列≥16 行）的较大值。进服若看到列数
-#          不对（如冒出 6 列），把 rows 改成你客户端实测的行数上限（如 15）。
-#   max-columns = 列预算。一个子服人多到要续列时，续的列也算在预算里；
-#          预算用完后，剩下的小服全部并进最后一列（分节间空一行）。
-#          并进去还是超高就允许溢出（网格变形但不丢人）—— 调大这个值或
-#          少列几个子服即可消除。
+# layout 模式（auto 落到 layout 时同样生效）
 # ------------------------------------------------------------
 [layout]
-max-columns = 3
-rows = 20
-header-format = " &7[#name#&7] - &6#count# &7&l人"   # 列头/分节头；#name# = 子服显示名，#count# = 该服总在线数（续列不变）
+max-columns = 3        # 列预算。人多到一个服装不下一列就续列（也占预算）；
+                       #   预算用完，剩下的小服并进最后一列（分节间空一行）。
+rows = 20              # 每列行数上限（原版 20），同时是 auto 的切换阈值。
+                       #   网格行数自适应：取「内容需要的高度」与「让客户端
+                       #   开出 N 列所需的最小行数」的较大值。看到列数不对
+                       #   （比如冒出 6 列）就把它改成客户端实测的行数上限。
+header-format = " &7[#name#&7] - &6#count# &7&l人"   # 列头；#name# = 子服显示名，#count# = 该服总在线
+prefix-format = ""     # 玩家名字前缀，默认空 = 不加。#name# = 所在子服显示名。
+                       #   ⚠️ 装了 TAB 就保持空：两边都写显示名会互相覆盖、前缀来回闪。
 separator = true       # 共享列里两个子服分节之间空一行
-blank-ping = 0         # 假人条目的伪装延迟（毫秒；0 = 满信号）
-#   show-hat = 皮肤**第二层**（帽子层）要不要渲染。1.21.4 起协议里多了这个字段，
-#     插件建的条目默认是关的 —— 占位皮肤的猫耳画在第二层，关了就看不见。
-#     真人的条目也会一并置成开（原版默认就是两层都显示）。
-show-hat = true
-#   default-skin = 假人皮肤。五种写法都认（推荐第 ① 种）：
-#      ① player:<玩家名>      例 "player:Notch" —— **自动联网取该玩家的皮肤**
-#         （带 Mojang 真签名），结果缓存到 plugins/vtabsort/skin-cache.properties；
-#         起服/重载时先用缓存顶上（不用等网络），同时后台再拉一遍刷新。
-#         ⚠️ 需要代理能访问 api.mojang.com（限流时保留旧缓存并打 WARN）。
-#      ② 纹理哈希：皮肤网站（mineskin.org / minecraft-heads.com 等）上抄的
-#         "Texture URL / hash" 最后那串 64 位十六进制
-#      ③ texture:<哈希>（和 TAB 同一个写法）
-#      ④ http://textures.minecraft.net/texture/<哈希>
-#      ⑤ 完整 base64 value（从 Mojang API 或别人配置里复制的）
-#     ②③④ 由插件自己拼属性，**不带签名**。签名是 Mojang 私钥签的，我们造
-#     不出来；而有些客户端/版本会直接丢弃无签名的纹理 → 全部退回默认
-#     Steve/Alex，且日志里一条错都没有（最难查）。所以**想要一定生效就用
-#     ① 或 ⑤**：MineSkin 上传时会一起返回 data.texture.value 和
-#     data.texture.signature，把两串分别贴进 xxx 和 xxx-signature 即可
-#     （带真签名，signatureRequired 保持 true 也正常显示）。
-#     填 ⑤ 时：给了签名就原样用；没给签名插件会把 signatureRequired 关掉。
-#     （②③④ 是老玩家最习惯的写法，保留支持，但线上验收时优先看 reload
-#      日志那行"皮肤已就绪（N 份带 Mojang 签名）"再排别的问题。）
-#     改完 /vts reload 即可（插件会自动重建假条目）。留空 = 默认 Steve/Alex。
-default-skin = "101388e165555312f7e20506208b994eee011037bd2d3166adefd6b912a95cfe"   # 纯色占位皮肤 #8f8f8f（已上传到皮肤 CDN）
-default-skin-signature = ""   # 只有第 ⑤ 种写法才需要（Mojang API 返回的 signature）
-#   column-skin = **列头（子服名那一行）左边的头像**，和上面 default-skin 完全独立：
-#     · default-skin 只管网格里的**填充假人**；
-#     · column-skin 只管列头那一行的小头像。
-#     写法和 default-skin 一模一样（player:名字 / 哈希 / texture: / URL / base64）。
-#     没配（留空）就退回 default-skin（老版本升级上来观感不变）。
+blank-ping = 0         # 填充假人的信号延迟（毫秒；0 = 满格）
+header-ping = 0        # 列头右边信号图标的延迟（毫秒）；不写就跟 blank-ping 一样
+show-hat = true        # 皮肤第二层（帽子层）要不要画。占位皮肤的猫耳画在第二层，
+                       #   关了就看不见。真人的条目也会一并置成开。
+#   default-skin = 填充假人的皮肤，五种写法：
+#     ① player:<玩家名>   联网取这个玩家的皮肤（带 Mojang 真签名，最稳）
+#     ② 纹理哈希          皮肤网站抄来的 32~80 位十六进制
+#     ③ texture:<哈希>    和 TAB 一个写法
+#     ④ http://textures.minecraft.net/texture/<哈希>
+#     ⑤ 完整 base64 value 需要配对应的 -signature；不给签名也能用
+#     ②③④ 不带签名，个别客户端会直接丢弃 → 退回 Steve/Alex。
+#     想要一定生效就用 ① 或 ⑤。留空 = 默认 Steve/Alex。
+default-skin = "101388e165555312f7e20506208b994eee011037bd2d3166adefd6b912a95cfe"   # 纯色占位皮肤 #8f8f8f
+default-skin-signature = ""   # 只有第 ⑤ 种写法才需要
+#   column-skin = 列头左边的头像，和 default-skin 互不相干（那只管填充假人）。
+#     写法同上。留空 = 退回 default-skin。
 column-skin = ""
 column-skin-signature = ""
 
 # ------------------------------------------------------------
-# flat 模式（auto 落地到 flat 时同样生效）
+# flat 模式（auto 落到 flat 时同样生效）
 # ------------------------------------------------------------
 [flat]
 prefix-format = "&8[#name#&8] "   # 名字前缀；#name# = 子服显示名
-sort = true            # true = 按子服人数降序（平手服名升序）；false = 原版顺序
+sort = true            # true = 按子服人数降序（平手按服名）；false = 原版顺序
 
 # ------------------------------------------------------------
-# Tab 上方/下方（header / footer）—— TAB 插件那套的接手版
-#   每行都会渲染，行内支持：
-#     &0-&f / &l &m &n &o &k / &r                  原版颜色码
-#     &#RRGGBB                                      十六进制颜色
-#     <#RRGGBB>文字</#RRGGBB>                       渐变（起止色逐字插值，
-#                                                   TAB 同一个写法）
+# Tab 上方/下方（header / footer）
+#   行内支持：&0-&f / &l &m &n &o &k / &r、&#RRGGBB、
+#             <#RRGGBB>文字</#RRGGBB>（渐变，起止色逐字插值）
 #   占位符（按每个玩家本人替换）：
-#     %online%        全服在线人数（含 /vts demo 的虚拟玩家）
-#     %server%        当前子服显示名（[servers.names]，不在里面就用原名）
-#     %server-raw%    子服原名
-#     %server-online% 当前子服人数
-#     %player%        自己的名字
-#     %ping%          自己的延迟（毫秒）
-#     %time% / %date% 服务器时间 HH:mm:ss / yyyy-MM-dd
-#   ⚠️ 认不出来的 %xxx% 原样显示（不去猜，配错了能看见）。
-#   ⚠️ 内容没变化不会重发包；enabled = false 会发一次空内容把已显示的擦掉。
+#     %online% 全服在线（含 demo） %server% 当前子服显示名 %server-raw% 子服原名
+#     %server-online% 当前子服人数 %player% 自己的名字 %ping% 自己的延迟
+#     %time% HH:mm:ss             %date% yyyy-MM-dd
+#   认不出来的 %xxx% 原样显示。内容没变不重发包；enabled = false 会清空一次。
 # ------------------------------------------------------------
 [header-footer]
 enabled = true
@@ -105,11 +78,9 @@ footer = [
 ]
 
 # ------------------------------------------------------------
-# 子服显示名（列头和前缀里用）。同时也是 /vts demo 的模拟玩家池。
-#   ⚠️ 这份清单**不**决定谁占分节：列的左右顺序一律按人数降序算，
-#      0 人的子服整个不出现（连列头都没有），所以永远不会出现空列。
-#      没列在这里但有人在线的服照样会显示（用服名原文当显示名）。
-#   ⚠️ v3 删掉了 [servers].order 和 [servers].unknown：列顺序不再由服主排。
+# 子服显示名（列头和前缀里用），也是 /vts demo 的模拟玩家池。
+#   0 人的子服整个不出现，不会留空列；没列在这里但有人在线的服
+#   照样显示（用服名原文）。列的左右顺序按人数降序，不在这里排。
 # ------------------------------------------------------------
 [servers.names]
 lobby = "&#fa86a9&l传送大厅"
@@ -122,14 +93,9 @@ bedwars = "&#fdb78e&l活动区域"
 killer = "&#fdb78e&l限时游戏"
 
 # ------------------------------------------------------------
-# 每个子服的列头头像 —— **颜色 = 该服在 [servers.names] 里的名字颜色**
-#   写法和皮肤那几种一样（player:名字 / 纹理哈希 / texture:<哈希> /
-#   URL / 完整 base64）。键名就是**子服原名**（小写，和 [servers.names] 一致）。
-#   回退顺序：[servers.skins.<本服>] → column-skin → default-skin。
-#   需要签名（粘贴完整 base64 时）就再写一条 <服名>-signature。
-#   下面是纯色皮肤（64×64 单色 PNG 上传到皮肤 CDN 拿到的哈希）：
-#     #fa86a9 / #e1f9e8 / #9adbc5 / #f7cf83 / #fdb78e
-#   换配色就重新生成对应颜色的纯色图上传，把哈希换进来。
+# 每个子服的列头头像（键名 = 子服原名小写，写法和皮肤那几种一样）。
+#   回退：本服 → column-skin → default-skin。要签名就再写一条
+#   <服名>-signature。下面是按各服名字颜色做的纯色皮肤。
 # ------------------------------------------------------------
 [servers.skins]
 lobby      = "a86d503d77b9d8da5850f41bba14cab93e5f543b3c34810d1afc0e5e98a58625"   # #fa86a9 传送大厅
@@ -144,22 +110,18 @@ killer     = "fd816f0f3e2c80584273097290e052b2d928344cdfa05f8127ab8d12086bf490" 
 [general]
 same-server-order = "name"   # 同一子服内：name = 名字序 / join = 加入顺序
 
-# ------------------------------------------------------------
-# 提示语（命令反馈用）
-# ------------------------------------------------------------
+# 命令反馈语
 [messages]
 reloaded = "配置已重新加载，Tab 已刷新"
 reload-failed = "配置加载失败，用的还是旧配置，原因：#reason#"
 no-permission = "你没有权限这么做"
-usage = "用法：/vtabsort reload | layout | demo | version"
+usage = "用法：/vtabsort reload | mode <layout|flat|auto> | layout | demo | version"
 
 # ------------------------------------------------------------
-# 杂项
-#   refresh-delay-ms = 玩家进服/切服后再补一发刷新的延迟（毫秒），
-#     兜 TAB 建条目的竞态。0 = 不补。
-#   reassert-seconds = 周期性校准（秒；0 = 关）：后端 Paper 会把玩家
-#     条目的 listOrder 重置回 0、TAB 也可能覆写显示名，靠它拉回来。
-#     改这个数值要重启代理才生效（周期起服时定死）。
+#   auto-reload = 发现 config.toml 变了就自动重载（按修改时间判断）
+#   refresh-delay-ms = 进服/切服后再补一发刷新的延迟（毫秒），0 = 不补
+#   reassert-seconds = 周期性校准（秒；0 = 关）：后端会把 listOrder 重置成 0，
+#     靠它拉回来。改数值要重启代理生效。
 # ------------------------------------------------------------
 [advanced]
 auto-reload = false
