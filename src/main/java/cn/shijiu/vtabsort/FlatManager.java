@@ -6,6 +6,7 @@ import com.velocitypowered.api.proxy.player.TabList;
 import com.velocitypowered.api.proxy.player.TabListEntry;
 import net.kyori.adventure.text.Component;
 
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Locale;
@@ -26,11 +27,14 @@ final class FlatManager {
     private final Sorter sorter;
     /** 补条目复用 layout 那套（真 UUID + 真皮肤），别再写第二份。 */
     private final LayoutManager standIns;
+    private final org.slf4j.Logger logger;
 
-    FlatManager(final ProxyServer proxy, final Sorter sorter, final LayoutManager standIns) {
+    FlatManager(final ProxyServer proxy, final Sorter sorter, final LayoutManager standIns,
+                final org.slf4j.Logger logger) {
         this.proxy = proxy;
         this.sorter = sorter;
         this.standIns = standIns;
+        this.logger = logger;
     }
 
     void applyAll(final Configuration cfg) {
@@ -39,16 +43,29 @@ final class FlatManager {
         final Map<UUID, Component> names = new HashMap<>();
         // 「加载中」（还没进任何子服）的那批：hide-loading 开着就藏起来
         final Set<UUID> loading = new HashSet<>();
+        // 在线 UUID（含连接中/切服瞬间没子服的）—— 幽灵条目清理用，别误删活人
+        final Set<UUID> online = new HashSet<>();
         for (final Player p : proxy.getAllPlayers()) {
+            online.add(p.getUniqueId());
             final String s = serverOf(p);
             if (s.isEmpty()) {
                 if (cfg.hideLoading()) {
                     loading.add(p.getUniqueId());
+                } else {
+                    // hide-loading=false：照样显示，但前缀挂「加载中」的显示名。
+                    // 🔴 以前这里直接 continue → names 里没有他 → 条目保持裸名、
+                    //    listOrder 也没人设 → 排在所有人后面，看起来就是个幽灵
+                    //    （2026-10-24 截图里的 Ku_Gu_Gu）。和 layout 单开一节的
+                    //    做法对齐：让人一眼看出是「还没进服」，而不是"没前缀的神秘人"。
+                    names.put(p.getUniqueId(), Colors.prefixed(
+                            cfg.flatPrefix().replace("#name#", cfg.loadingDisplayName()),
+                            p.getUsername()));
                 }
                 continue;
             }
             names.put(p.getUniqueId(), prefixed(cfg, s, p.getUsername()));
         }
+        int ghosts = 0;
         for (final Player viewer : proxy.getAllPlayers()) {
             final TabList tabList = viewer.getTabList();
             for (final Player p : proxy.getAllPlayers()) {
@@ -93,7 +110,42 @@ final class FlatManager {
                     setDisplay(entry, want);
                 }
             }
+            ghosts += purgeGhosts(viewer, online);
         }
+        if (ghosts > 0) {
+            logger.info("[vtabsort] flat 清了 " + ghosts + " 条幽灵条目（这些 UUID 已经不在线了，"
+                    + "正常断开本该由后端/代理收走）");
+        }
+    }
+
+    /**
+     * 清「幽灵条目」：UUID 已经不在在线列表里的 Tab 条目。
+     *
+     * <p>🔴 为什么必须清（2026-10-24 现场截图）：flat 只遍历在线玩家 → 掉线/
+     * 被踢的人如果在别人列表里留了条目，就再没人认领它 —— 不改名、不排序，
+     * 裸名挂在最后，还能挂好几分钟（截图里那个 Ku_Gu_Gu，当时是 3.3.4）。
+     * 代理正常断开会清一次，但半开连接、后端异常断开、以及我们自己补的
+     * standin 条目都不一定有人管；layout 有 {@code audit()} 兜底，flat 以前没有。
+     *
+     * <p>只删「UUID 不在线」的 —— 在线玩家（含刚连上、切服瞬间没有子服的）
+     * 一律不碰，那是后端/代理的条目。
+     */
+    private int purgeGhosts(final Player viewer, final Set<UUID> online) {
+        final TabList tabList = viewer.getTabList();
+        int removed = 0;
+        // getEntries() 是集合视图，边遍历边删会炸 —— 先复制一份
+        for (final TabListEntry entry : new ArrayList<>(tabList.getEntries())) {
+            final UUID id = entry.getProfile().getId();
+            if (online.contains(id)) {
+                continue;
+            }
+            try {
+                tabList.removeEntry(id);
+                removed++;
+            } catch (final Exception ignored) {
+            }
+        }
+        return removed;
     }
 
     /** flat → layout 切换：把前缀显示名还原成裸名字（TAB 之后会按自己的格式重设）。 */

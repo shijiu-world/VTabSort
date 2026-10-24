@@ -109,7 +109,7 @@ public final class VTabSort {
         this.sorter = new Sorter(proxy);
         this.skins = new SkinCache(logger, dataDirectory); // 读磁盘缓存，起服就有皮肤
         this.layoutManager = new LayoutManager(proxy, sorter, skins, logger);
-        this.flatManager = new FlatManager(proxy, sorter, layoutManager);
+        this.flatManager = new FlatManager(proxy, sorter, layoutManager, logger);
         this.headerFooter = new HeaderFooter(proxy);
         this.config = Configuration.defaults();
     }
