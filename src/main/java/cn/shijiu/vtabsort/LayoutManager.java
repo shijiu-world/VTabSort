@@ -6,7 +6,6 @@ import com.velocitypowered.api.proxy.player.TabList;
 import com.velocitypowered.api.proxy.player.TabListEntry;
 import com.velocitypowered.api.util.GameProfile;
 import net.kyori.adventure.text.Component;
-import net.kyori.adventure.text.serializer.plain.PlainTextComponentSerializer;
 
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
@@ -57,6 +56,9 @@ final class LayoutManager {
      */
     private static final int FAKE_RANGE = 512;
 
+    /** {@link #fakeUuid} 的缓存（下标 = 槽位号）。纯函数结果，只加速不改变语义。 */
+    private static final UUID[] FAKE_IDS = new UUID[FAKE_RANGE];
+
     private final ProxyServer proxy;
     private final Sorter sorter;
     private final SkinCache skins;
@@ -80,6 +82,12 @@ final class LayoutManager {
      * 真把它建出来时是同一个 UUID，不会变成两条。
      *
      * <p>这个 set 只用来在玩家下线时收尾（见 {@link #forget}）。
+     *
+     * <p>⚠️ 粒度注意：集合是<b>全局</b>的（UUID 一份），而条目是<b>每个 viewer 一份</b>。
+     * {@code applyViewer} 里第一个 viewer 发现"真条目已经在了"就会把这个 UUID 移出集合，
+     * 之后其它 viewer 里我们补的那条就没标记了 —— 那人掉线时 {@code forget} 收不到。
+     * 所以这里只是"尽力早收"，**真正的兜底是 {@link #audit} 和
+     * FlatManager#purgeGhosts**（按「UUID 不在线」清）。别把本集合当作准确性依据。
      */
     private final Set<UUID> standins = ConcurrentHashMap.newKeySet();
 
@@ -98,6 +106,16 @@ final class LayoutManager {
      * <p>所以这里缓存最后一个有效值：拿不到就用它顶，一个都没有才用 0。
      */
     private final Map<UUID, Integer> lastPing = new ConcurrentHashMap<>();
+
+    /**
+     * 每个 viewer 上一次「清掉多余条目」告警的时间（毫秒）。
+     *
+     * <p>有插件持续往后端发条目时，{@code audit} 每轮都会删、每轮都想 WARN
+     * （reassert 默认 3 秒一轮）→ 日志洪水。这里做一分钟限流。
+     */
+    private final Map<UUID, Long> auditWarnedAt = new ConcurrentHashMap<>();
+    /** 同一个人多久最多提醒一次「清掉多余条目」。 */
+    private static final long AUDIT_WARN_INTERVAL_MS = 60_000L;
 
     LayoutManager(final ProxyServer proxy, final Sorter sorter, final SkinCache skins,
                   final org.slf4j.Logger logger) {
@@ -169,8 +187,12 @@ final class LayoutManager {
             // 加载中那一节用 [servers.names].loading 的文案（默认「加载中」）
             secs.add(new Sec(s, s.isEmpty() ? cfg.loadingDisplayName() : cfg.serverDisplayName(s), ps));
         }
-        // 人数降序（平手按服名升序）——这就是列的左右顺序
-        secs.sort(Comparator.comparingInt((Sec s) -> -s.count()).thenComparing(s -> s.server));
+        // 人数降序（平手按服名升序）——这就是列的左右顺序。
+        // 🔴 「加载中」那一节（server == ""）强制排最后：它的键是空串，字典序比谁
+        //    都小，人数一多就会飘到**第一列**，跟注释里说的"放最后"正好相反
+        //    （2026-10-24 review 发现）。用一个排不出正常服名的大字符顶替排序键。
+        secs.sort(Comparator.comparingInt((Sec s) -> -s.count())
+                .thenComparing(s -> s.server.isEmpty() ? "\uffff" : s.server));
 
         // 3) 分列（含同一子服跨多列的续列 + 尾部共享列）
         final int cap = Math.max(2, cfg.rows());
@@ -581,95 +603,16 @@ final class LayoutManager {
             }
         }
         if (removed > 0) {
-            logger.warn("[vtabsort] " + viewer.getUsername() + " 的 Tab 里有 " + removed
-                    + " 条多余条目（历史残留），已清掉；本轮网格 " + model.slots.size() + " 格");
-        }
-    }
-
-    /**
-     * 诊断：把这个 viewer 客户端**实际**看到的样子打印出来（/vts verify）。
-     *
-     * <p>按客户端同一套规则算：先按 listOrder 降序（同值按旁观/队伍/名字），
-     * 再 `rows = ceil(n/cols)` 列主序排。和插件建模逐格对齐就能一眼看出谁多谁少。
-     */
-    List<String> verify(final Player viewer, final LayoutModel model) {
-        final TabList tabList = viewer.getTabList();
-        final List<TabListEntry> listed = new ArrayList<>();
-        final List<TabListEntry> unlisted = new ArrayList<>();
-        for (final TabListEntry entry : tabList.getEntries()) {
-            (entry.isListed() ? listed : unlisted).add(entry);
-        }
-        listed.sort(Comparator
-                .comparingInt((TabListEntry e) -> -e.getListOrder())
-                .thenComparingInt(e -> e.getGameMode() == 3 ? 1 : 0)
-                .thenComparing(e -> e.getProfile().getName(), String.CASE_INSENSITIVE_ORDER));
-
-        // 🔴 客户端只渲染前 80 条（PlayerTabOverlay#getPlayerInfos 的 limit(80)），
-        //    而且网格形状是按**截断后**的条数推的 —— 这里必须照做，否则 verify
-        //    算出来的列/行跟玩家屏幕上看到的不一样，越验越乱。
-        final int listedCount = listed.size();
-        final int rendered = Math.min(listedCount, Configuration.CLIENT_MAX_ENTRIES);
-        int rows = rendered;
-        int cols = 1;
-        while (rows > 20) {
-            rows = (rendered + ++cols - 1) / cols;
-        }
-        final int rowsUsed = Math.max(rows, 1);
-
-        final List<String> out = new ArrayList<>();
-        out.add("客户端列表：" + listedCount + " 条 listed（另有 " + unlisted.size()
-                + " 条 listed=false）"
-                + (listedCount > Configuration.CLIENT_MAX_ENTRIES
-                        ? "；⚠️ 超过客户端上限 " + Configuration.CLIENT_MAX_ENTRIES + " 条 → 只渲染前 "
-                                + rendered + " 条，后面 " + (listedCount - rendered) + " 条谁也看不见"
-                        : "")
-                + " → 客户端按 " + rendered + " 条算网格：" + cols + " 列 × " + rowsUsed + " 行");
-        out.add("插件模型：" + model.slots.size() + " 格（" + model.columnCount + " 列 × "
-                + model.rows + " 行）"
-                + (rendered == model.slots.size() ? " —— 对得上"
-                        : " —— ⚠️ 对不上，客户端会整体错位"));
-        for (int i = 0; i < listedCount; i++) {
-            final TabListEntry e = listed.get(i);
-            final String name = e.getDisplayNameComponent()
-                    .map(c -> PlainTextComponentSerializer.plainText().serialize(c))
-                    .orElse(e.getProfile().getName());
-            final StringBuilder sb = new StringBuilder("  #").append(i);
-            if (i < rendered) {
-                sb.append(" 列").append(i / rowsUsed + 1).append(" 行").append(i % rowsUsed + 1);
-            } else {
-                sb.append(" （超上限，客户端不渲染）");
-            }
-            sb.append(" order=").append(e.getListOrder())
-                    .append("  ").append(name.isEmpty() ? "(空)" : name);
-            if (i >= model.slots.size()) {
-                sb.append("   ⚠️ 超出插件模型（多余条目）");
-            } else {
-                final LayoutModel.Slot slot = model.slots.get(i);
-                if (slot.player != null) {
-                    if (!slot.player.equals(e.getProfile().getId())) {
-                        sb.append("   ⚠️ 这格应该是 ").append(slot.name);
-                    }
-                } else if (!fakeUuid(i).equals(e.getProfile().getId())) {
-                    sb.append("   ⚠️ 这格应该是插件建的假条目");
-                }
-            }
-            out.add(sb.toString());
-        }
-        for (final TabListEntry e : unlisted) {
-            out.add("  (listed=false) " + e.getProfile().getName()
-                    + (inModel(model, e.getProfile().getId()) ? "" : "   ⚠️ 多余"));
-        }
-        return out;
-    }
-
-    /** 本轮槽位表里有没有这个 UUID（含隐藏的）—— verify 用。 */
-    private static boolean inModel(final LayoutModel model, final UUID id) {
-        for (final LayoutModel.Slot s : model.slots) {
-            if (id.equals(s.player)) {
-                return true;
+            // 限流：某个插件持续往后端发条目时，audit 会每轮都清、每轮都想 WARN
+            // （reassert 默认 3 秒一轮）→ 一分钟内同一个 viewer 只说一次。
+            final long now = System.currentTimeMillis();
+            final Long last = auditWarnedAt.get(viewer.getUniqueId());
+            if (last == null || now - last >= AUDIT_WARN_INTERVAL_MS) {
+                auditWarnedAt.put(viewer.getUniqueId(), now);
+                logger.warn("[vtabsort] " + viewer.getUsername() + " 的 Tab 里有 " + removed
+                        + " 条多余条目（历史残留），已清掉；本轮网格 " + model.slots.size() + " 格");
             }
         }
-        return model.hidden.contains(id);
     }
 
     /**
@@ -756,8 +699,11 @@ final class LayoutManager {
         if (!entry.isListed()) {
             setListed(entry, true);
         }
-        if (showHat && !entry.isShowHat()) {
-            setShowHat(entry, true);
+        // 🔴 双向写：以前只处理 showHat=true 的方向，于是把配置改成 false 之后
+        //    已存在的条目第二层（猫耳/帽子）会一直画到下一条网格重建，
+        //    reload 看起来"没生效"（2026-10-24 review）。
+        if (entry.isShowHat() != showHat) {
+            setShowHat(entry, showHat);
         }
     }
 
@@ -807,6 +753,7 @@ final class LayoutManager {
      */
     void forget(final UUID uuid) {
         lastPing.remove(uuid);
+        auditWarnedAt.remove(uuid);
         if (!standins.remove(uuid)) {
             return;
         }
@@ -861,9 +808,11 @@ final class LayoutManager {
         for (final UUID u : new ArrayList<>(standins)) {
             forget(u);
         }
-        for (final Player viewer : proxy.getAllPlayers()) {
+        // 快照一次就够：内层循环每轮重取 getAllPlayers() 是 N² 次调用（review 后改）
+        final List<Player> players = new ArrayList<>(proxy.getAllPlayers());
+        for (final Player viewer : players) {
             stripViewerFakes(viewer);
-            for (final Player p : proxy.getAllPlayers()) {
+            for (final Player p : players) {
                 final TabListEntry entry = viewer.getTabList().getEntry(p.getUniqueId()).orElse(null);
                 if (entry != null && !entry.isListed()) {
                     setListed(entry, true);
@@ -883,9 +832,26 @@ final class LayoutManager {
         }
     }
 
-    /** 槽位 → 假条目 UUID：确定性生成，跨重算稳定（避免拔了又加的包抖动）。 */
+    /**
+     * 槽位 → 假条目 UUID：确定性生成，跨重算稳定（避免拔了又加的包抖动）。
+     *
+     * <p>结果缓存起来：`UUID.nameUUIDFromBytes` 每次都是一次 MD5，而清理残留假条目
+     * 要按 {@link #FAKE_RANGE} 扫一整圈（几十个 viewer × 几百格），每轮 rebuild 都现算
+     * 纯属浪费。纯函数，缓存永远不会过期。
+     */
     static UUID fakeUuid(final int slot) {
-        return UUID.nameUUIDFromBytes(("vtabsort-slot-" + slot).getBytes(StandardCharsets.UTF_8));
+        if (slot >= 0 && slot < FAKE_IDS.length) {
+            final UUID cached = FAKE_IDS[slot];
+            if (cached != null) {
+                return cached;
+            }
+        }
+        final UUID id = UUID.nameUUIDFromBytes(
+                ("vtabsort-slot-" + slot).getBytes(StandardCharsets.UTF_8));
+        if (slot >= 0 && slot < FAKE_IDS.length) {
+            FAKE_IDS[slot] = id;
+        }
+        return id;
     }
 
     /**

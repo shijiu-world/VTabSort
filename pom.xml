@@ -6,7 +6,7 @@
 
     <groupId>cn.shijiu</groupId>
     <artifactId>vtabsort</artifactId>
-    <version>3.3.13</version>
+    <version>3.3.14</version>
     <packaging>jar</packaging>
 
     <name>VTabSort</name>

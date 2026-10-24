@@ -254,9 +254,7 @@ public final class VTabSort {
     private void warnOverflowOnce(final Configuration cfg, final Decision decision) {
         final boolean auto = configuredMode(cfg) == Configuration.Mode.AUTO;
         final int online = online();
-        final boolean overflow = decision.mode == Configuration.Mode.FLAT
-                ? auto && (decision.model != null || online > Configuration.CLIENT_MAX_ENTRIES)
-                : decision.model != null && decision.model.slots.size() > Configuration.CLIENT_MAX_ENTRIES;
+        final boolean overflow = overflowOf(decision, auto, online);
         if (overflow == overflowWarned) {
             return;
         }
@@ -279,6 +277,22 @@ public final class VTabSort {
                     + "整张网格会错位。请调小 [layout].max-columns / rows，"
                     + "或把 [display].mode 改成 auto（超限时自动退回 flat）。");
         }
+    }
+
+    /**
+     * 这一轮算不算「超过客户端 80 条上限」的状态（日志/命令共用一套口径）。
+     *
+     * <p>走 flat 时只有 auto 才算"超限退回"：显式 flat 本来就不建网格，无所谓超不超；
+     * 而 auto 超限有两种来源 —— 人数直接超过 80（那时 {@link #decide} 根本没建模型，
+     * {@code model == null}），或者建出来的网格格数超了。以前这段三元嵌套塞在
+     * {@code warnOverflowOnce} 里，读起来得在脑子里跑一遍真值表（review 后抽出来）。
+     */
+    private static boolean overflowOf(final Decision decision, final boolean auto, final int online) {
+        if (decision.mode == Configuration.Mode.FLAT) {
+            return auto && (decision.model != null || online > Configuration.CLIENT_MAX_ENTRIES);
+        }
+        return decision.model != null
+                && decision.model.slots.size() > Configuration.CLIENT_MAX_ENTRIES;
     }
 
     /**
@@ -605,7 +619,7 @@ public final class VTabSort {
         }
         final LayoutModel model = decision.model != null
                 ? decision.model : layoutManager.build(cfg, demo.snapshot());
-        final List<String> lines = layoutManager.verify(target, model);
+        final List<String> lines = LayoutVerifier.verify(target, model);
         send(source, "== " + target.getUsername() + " 的 Tab 实况 ==");
         for (final String line : lines) {
             send(source, line);
@@ -733,7 +747,9 @@ public final class VTabSort {
         final Configuration cfg = config;
         if (mode == Configuration.Mode.LAYOUT) {
             final LayoutModel model = lastModel;
-            if (model != null) {
+            // 没配玩家前缀（[layout].prefix-format 为空）时显示名根本不归我们管，
+            // 每 0.5 秒空转一圈 V×槽位 的循环没意义
+            if (model != null && !cfg.layoutPrefix().isEmpty()) {
                 layoutManager.guardNames(model, cfg);
             }
         } else {

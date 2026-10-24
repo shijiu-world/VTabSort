@@ -77,11 +77,24 @@ public final class Colors {
      * 显示名」，layout 模式就是靠这个跟 TAB 划清边界的）。
      */
     static Component prefixed(final String prefix, final String name) {
-        final Component text = Component.text(name == null ? "" : name);
         if (prefix == null || prefix.isEmpty()) {
+            return Component.text(name == null ? "" : name);
+        }
+        return prefixed(parse(prefix), name);
+    }
+
+    /**
+     * 同上，但前缀是**已经解析好**的组件。
+     *
+     * <p>留给需要反复渲染同一批名字的调用方（flat 的显示名守卫每 0.5 秒扫所有人）：
+     * 前缀按子服缓存一份 `Colors.parse(prefix)`，就不用给每个玩家重新 parse 一遍。
+     */
+    static Component prefixed(final Component prefix, final String name) {
+        final Component text = Component.text(name == null ? "" : name);
+        if (prefix == null) {
             return text;
         }
-        return Component.text().append(parse(prefix)).append(text).build();
+        return Component.text().append(prefix).append(text).build();
     }
 
     /** 原样段 + 渐变段拼成一个组件（多段挂空父组件，样式互不传染）。 */

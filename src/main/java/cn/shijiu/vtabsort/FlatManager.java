@@ -42,18 +42,42 @@ final class FlatManager {
     /**
      * 这个人在 flat 里该显示的组件。
      *
-     * @return {@code null} = 本轮不显示他（hide-loading 开着且他还没进任何子服）
+     * @param prefixes 每轮一份的「子服 → 已解析前缀组件」缓存（同服所有人共用）
+     * @return {@code null} = 这一轮不写显示名（hide-loading 开着且他还没进任何子服，
+     *         或者 [flat].prefix-format 配成空 = 明确不碰显示名）
      */
-    private Component nameFor(final Configuration cfg, final Player p) {
+    private Component nameFor(final Configuration cfg, final Player p,
+                              final Map<String, Component> prefixes) {
         final String s = serverOf(p);
         if (!s.isEmpty()) {
-            return prefixed(cfg, s, p.getUsername());
+            return nameOf(cfg, s, p.getUsername(), prefixes);
         }
         if (cfg.hideLoading()) {
             return null;
         }
-        return Colors.prefixed(cfg.flatPrefix().replace("#name#", cfg.loadingDisplayName()),
-                p.getUsername());
+        return nameOf(cfg, "", p.getUsername(), prefixes);
+    }
+
+    /**
+     * 前缀 + 名字的实际拼装。
+     *
+     * @param server 子服名（小写）；空串 = 「加载中」那一组
+     * @return {@code null} = {@code [flat].prefix-format} 配成空 → <b>不碰显示名</b>。
+     *         🔴 这条和 layout 的 {@code playerDisplay} 是同一套语义（空 = 归 TAB /
+     *         原版管）。以前这里返回"裸名字"照样写回去，于是 flat 每 0.5 秒都跟 TAB
+     *         抢一次显示名，服主把前缀清空也停不下来（2026-10-24 review）。
+     */
+    private static Component nameOf(final Configuration cfg, final String server,
+                                    final String username, final Map<String, Component> prefixes) {
+        final String format = cfg.flatPrefix();
+        if (format.isEmpty()) {
+            return null;
+        }
+        // 前缀按子服缓存：guard 每 0.5 秒扫一遍所有人，别给每个玩家重新 parse 一次
+        final Component prefix = prefixes.computeIfAbsent(server, k -> Colors.parse(
+                format.replace("#name#",
+                        k.isEmpty() ? cfg.loadingDisplayName() : cfg.serverDisplayName(k))));
+        return Colors.prefixed(prefix, username);
     }
 
     /**
@@ -61,11 +85,15 @@ final class FlatManager {
      * 只是 flat 的显示名是现算的。只写不一致的，不动顺序、不建条目。
      */
     void guardNames(final Configuration cfg) {
+        if (cfg.flatPrefix().isEmpty()) {
+            return; // 不碰显示名，别空转
+        }
         final List<Player> players = new ArrayList<>(proxy.getAllPlayers());
+        final Map<String, Component> prefixes = new HashMap<>();
         for (final Player viewer : players) {
             final TabList tabList = viewer.getTabList();
             for (final Player p : players) {
-                final Component want = nameFor(cfg, p);
+                final Component want = nameFor(cfg, p, prefixes);
                 if (want == null) {
                     continue;
                 }
@@ -81,37 +109,35 @@ final class FlatManager {
     }
 
     void applyAll(final Configuration cfg) {
+        // 快照一次：以前外层和内层都现取 getAllPlayers()，30 人就是 900 次调用，
+        // 而且两层拿到的可能不是同一份集合（review 后统一成一份）
+        final List<Player> players = new ArrayList<>(proxy.getAllPlayers());
         final Map<UUID, Integer> orders = cfg.flatSort() ? sorter.computeOrders(cfg) : null;
-        // 前缀显示名：同前缀对所有人一样，算一份全局复用
+        // 前缀（含子服显示名）对同一个子服的所有人一样 → 每轮每个服只 parse 一次
+        final Map<String, Component> prefixes = new HashMap<>();
+        // 每个人该显示的组件；值是 null = 不碰显示名（前缀配成空，见 nameOf）
         final Map<UUID, Component> names = new HashMap<>();
         // 「加载中」（还没进任何子服）的那批：hide-loading 开着就藏起来
         final Set<UUID> loading = new HashSet<>();
         // 在线 UUID（含连接中/切服瞬间没子服的）—— 幽灵条目清理用，别误删活人
         final Set<UUID> online = new HashSet<>();
-        for (final Player p : proxy.getAllPlayers()) {
+        for (final Player p : players) {
             online.add(p.getUniqueId());
             final String s = serverOf(p);
-            if (s.isEmpty()) {
-                if (cfg.hideLoading()) {
-                    loading.add(p.getUniqueId());
-                } else {
-                    // hide-loading=false：照样显示，但前缀挂「加载中」的显示名。
-                    // 🔴 以前这里直接 continue → names 里没有他 → 条目保持裸名、
-                    //    listOrder 也没人设 → 排在所有人后面，看起来就是个幽灵
-                    //    （2026-10-24 截图里的 Ku_Gu_Gu）。和 layout 单开一节的
-                    //    做法对齐：让人一眼看出是「还没进服」，而不是"没前缀的神秘人"。
-                    //    前缀就是普通的那份（[flat].prefix-format），只是 #name# 换成
-                    //    [servers.names].loading，不再另开一个键。
-                    names.put(p.getUniqueId(), nameFor(cfg, p));
-                }
+            if (s.isEmpty() && cfg.hideLoading()) {
+                loading.add(p.getUniqueId());
                 continue;
             }
-            names.put(p.getUniqueId(), prefixed(cfg, s, p.getUsername()));
+            // 其余都走 nameFor：有子服的挂子服前缀；还没进服的挂「加载中」显示名。
+            // 🔴 以前 hide-loading=false 的这批直接 continue → names 里没有他 → 条目
+            //    保持裸名、listOrder 也没人设 → 排在所有人后面，看起来就是个幽灵
+            //    （2026-10-24 截图里的 Ku_Gu_Gu）。和 layout 单开一节的思路对齐。
+            names.put(p.getUniqueId(), nameFor(cfg, p, prefixes));
         }
         int ghosts = 0;
-        for (final Player viewer : proxy.getAllPlayers()) {
+        for (final Player viewer : players) {
             final TabList tabList = viewer.getTabList();
-            for (final Player p : proxy.getAllPlayers()) {
+            for (final Player p : players) {
                 if (loading.contains(p.getUniqueId())) {
                     // 藏：条目留着但不能显示（flat 没有网格可言，直接 listed=false 即
                     // 从列表里消失；等它进了子服下一轮自然恢复）
@@ -193,20 +219,16 @@ final class FlatManager {
 
     /** flat → layout 切换：把前缀显示名还原成裸名字（TAB 之后会按自己的格式重设）。 */
     void resetDisplayNames() {
-        for (final Player viewer : proxy.getAllPlayers()) {
+        final List<Player> players = new ArrayList<>(proxy.getAllPlayers());
+        for (final Player viewer : players) {
             final TabList tabList = viewer.getTabList();
-            for (final Player p : proxy.getAllPlayers()) {
+            for (final Player p : players) {
                 final TabListEntry entry = tabList.getEntry(p.getUniqueId()).orElse(null);
                 if (entry != null) {
                     setDisplay(entry, Component.text(p.getUsername()));
                 }
             }
         }
-    }
-
-    /** 前缀与名字做兄弟节点挂空父组件：前缀的颜色不会传染名字。 */
-    private static Component prefixed(final Configuration cfg, final String server, final String username) {
-        return Colors.prefixed(cfg.flatPrefix().replace("#name#", cfg.serverDisplayName(server)), username);
     }
 
     private static String serverOf(final Player p) {

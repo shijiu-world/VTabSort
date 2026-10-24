@@ -102,8 +102,11 @@ public final class TomlLite {
      * {@code # lobby = "player:Notch"} 这种"注释掉的示例"会被当成真配置
      * —— 键名变成 {@code "servers.skins.# lobby"}，动态扫前缀的功能（如
      * [servers.skins]）就会凭空多出一个叫 "# lobby" 的服。
+     *
+     * <p>包内可见：{@link Configuration#writeMode} 也要用它 —— 判断段头时
+     * 必须先剥掉行尾注释，否则 {@code [display]   # 模式} 这种写法认不出来。
      */
-    private static String stripComment(final String line) {
+    static String stripComment(final String line) {
         char quote = 0;
         for (int i = 0; i < line.length(); i++) {
             final char c = line.charAt(i);

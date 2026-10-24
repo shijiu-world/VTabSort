@@ -42,6 +42,23 @@ public final class Configuration {
      */
     static final int CLIENT_MAX_ENTRIES = 80;
 
+    /**
+     * 客户端每列能排的<b>行数</b>上限（同样硬编码在客户端里，配不了）。
+     *
+     * <p>26.2 的 {@code PlayerTabOverlay#extractRenderState}：
+     * <pre>
+     *   int rows = slots = playerInfos.size();
+     *   int cols = 1;
+     *   while (rows &gt; 20) rows = (slots + ++cols - 1) / cols;
+     *   col = i / rows; row = i % rows;      // 列主序
+     * </pre>
+     * 「每列最多 20 行」是死约束：{@code [layout].rows} 写大于 20 时，插件按
+     * C 列 × N 行发出去，客户端却会拿 N &gt; 20 继续折列 → 整张表错位。而且总条目
+     * 没到 80 时连 {@code warnOverflowOnce} 都不会响，服主完全查不出原因
+     * （2026-10-24 review 发现）。所以读配置时一律夹到 20 并 WARN。
+     */
+    static final int CLIENT_MAX_ROWS = 20;
+
     /** 展示模式。auto = 按在线人数在 flat / layout 之间自己切。 */
     public enum Mode {
         LAYOUT, FLAT, AUTO;
@@ -211,31 +228,69 @@ public final class Configuration {
         this.hideLoading = hideLoading;
     }
 
+    /**
+     * 默认配置 —— <b>jar 里那份 config.toml 解析出来的结果</b>。
+     *
+     * <p>为什么是「解析资源文件」而不是手写一套：{@link #fromMap} 拿它当「键缺失」
+     * 的 fallback。以前 fallback 是硬编码常量，等于维护两套数字（max-columns 4 vs 3、
+     * blank-ping 0 vs 1000、header-format 两套文案、hide-loading true vs false…）
+     * —— 服主把一行删掉，值就静默变成了另一套，日志里毫无痕迹。
+     * 现在资源文件是唯一真相（2026-10-24 review）。
+     */
     public static Configuration defaults() {
+        final Map<String, Object> raw = resource();
+        return raw.isEmpty() ? builtin() : fromMap(raw, builtin(), null);
+    }
+
+    /** 解析 jar 内的 config.toml；读不出来返回空表（调用方退回 {@link #builtin()}）。 */
+    private static Map<String, Object> resource() {
+        try (InputStream in = Configuration.class.getClassLoader()
+                .getResourceAsStream("config.toml")) {
+            if (in == null) {
+                return Map.of();
+            }
+            String text = new String(in.readAllBytes(), StandardCharsets.UTF_8);
+            if (!text.isEmpty() && text.charAt(0) == '\uFEFF') {
+                text = text.substring(1); // 记事本 BOM
+            }
+            return TomlLite.parse(text);
+        } catch (final IOException | RuntimeException e) {
+            return Map.of();
+        }
+    }
+
+    /**
+     * 最后的兜底：连 jar 里的 config.toml 都读不出来（jar 损坏）时才用它。
+     *
+     * <p>刻意只保留最小可用值，别把它当成"默认配置"来维护 —— 正常路径永远是
+     * {@link #defaults()}（读资源文件）。数值尽量和资源文件对齐，省得兜底时观感突变。
+     */
+    private static Configuration builtin() {
         final Map<String, String> names = new TreeMap<>();
-        names.put("lobby", "大厅");
-        names.put("survival", "生存净土");
-        names.put("survival2", "生存乐土");
-        names.put("industry", "工业基地");
-        names.put("starvalley", "星露谷");
-        names.put("minigame", "电玩中心");
-        names.put("bedwars", "起床战争");
-        names.put("killer", "限时游戏");
+        names.put("lobby", "&#fa86a9&l传送大厅");
+        names.put("survival", "&#e1f9e8&l生存净土");
+        names.put("survival2", "&#9adbc5&l生存乐土");
+        names.put("industry", "&#f7cf83&l工业基地");
+        names.put("starvalley", "&#fdb78e&l星露谷");
+        names.put("minigame", "&#fa86a9&l电玩中心");
+        names.put("bedwars", "&#fdb78e&l活动区域");
+        names.put("killer", "&#fdb78e&l限时游戏");
+        names.put("loading", "&7&l正在加载");
         final Map<String, String> messages = new LinkedHashMap<>();
         messages.put("reloaded", "配置已重新加载，Tab 已刷新");
         messages.put("reload-failed", "配置加载失败，用的还是旧配置，原因：#reason#");
         messages.put("no-permission", "你没有权限这么做");
         messages.put("usage", "用法：/vtabsort reload | mode <layout|flat|auto> | layout | demo | version");
-        return new Configuration(Mode.LAYOUT, 4, 20,
-                "&e#name# &7· #count#", "", true,
-                0, 0, true, "", "", "", "", Map.of(), Map.of(),
-                "&7[&e#name#&7] ", true,
+        return new Configuration(Mode.AUTO, 3, 20,
+                " &7[#name#&7] - &6#count# &7&l人", " ", true,
+                1000, -1, true, "", "", "", "", Map.of(), Map.of(),
+                "&8[#name#&8] ", true,
                 names, false, messages,
                 false, 3, 200, 3,
                 true,
                 List.of("&e欢迎来到 &6拾玖世界", "&7在线 &f%online% &7人 · 当前 &f%server%"),
                 List.of("&7延迟 &#9adbc5%ping% &7ms"),
-                true);
+                false);
     }
 
     /**
@@ -252,7 +307,10 @@ public final class Configuration {
         return maxColumns;
     }
 
-    /** 客户端每列行数上限（网格实际行数自适应，见 LayoutManager）。 */
+    /**
+     * 每列行数上限（{@code [layout].rows}，夹在 5~{@value #CLIENT_MAX_ROWS}），
+     * 同时也是 auto 模式的 flat/layout 切换阈值。网格实际行数自适应，见 LayoutManager。
+     */
     public int rows() {
         return rows;
     }
@@ -425,7 +483,8 @@ public final class Configuration {
                 copyDefault(logger, file);
             }
             final Map<String, Object> raw = TomlLite.parse(file);
-            final Configuration config = fromMap(raw);
+            // fallback 用「资源文件解析出来的配置」（唯一真相），别再用硬编码常量
+            final Configuration config = fromMap(raw, defaults(), logger);
             return new LoadResult(config, null);
         } catch (final IOException e) {
             // 读挂了不算致命：用默认配置顶上，起服别被一个文件拦住。
@@ -463,7 +522,10 @@ public final class Configuration {
             int insertAt = -1;
             boolean done = false;
             for (int i = 0; i < lines.size() && !done; i++) {
-                final String t = lines.get(i).trim();
+                final String rawLine = lines.get(i);
+                // 先剥行尾注释再判断段头：服主写成 "[display]   # 模式" 也要认得出
+                // （以前用 endsWith("]") 判断，加个注释就整段失配，mode 会被插到别处）
+                final String t = TomlLite.stripComment(rawLine).trim();
                 if (t.startsWith("[") && t.endsWith("]")) {
                     inDisplay = "[display]".equalsIgnoreCase(t);
                     if (inDisplay) {
@@ -471,15 +533,17 @@ public final class Configuration {
                     }
                     continue;
                 }
-                if (!inDisplay || t.isEmpty() || t.startsWith("#")) {
+                if (!inDisplay || t.isEmpty()) {
                     continue;
                 }
                 final int eq = t.indexOf('=');
                 if (eq <= 0 || !"mode".equalsIgnoreCase(t.substring(0, eq).trim())) {
                     continue;
                 }
-                final int hash = t.indexOf('#', eq + 1);
-                lines.set(i, hash >= 0 ? fresh + "   " + t.substring(hash) : fresh);
+                // 行尾注释原样保留 —— 从**原始行**里取（剥注释那一步已经把它丢了）
+                final int rawEq = rawLine.indexOf('=');
+                final int hash = rawEq < 0 ? -1 : rawLine.indexOf('#', rawEq + 1);
+                lines.set(i, hash >= 0 ? fresh + "   " + rawLine.substring(hash) : fresh);
                 done = true;
             }
             if (!done) {
@@ -497,25 +561,52 @@ public final class Configuration {
         }
     }
 
-    private static Configuration fromMap(final Map<String, Object> raw) {
-        final Mode mode = Mode.parse(TomlLite.string(raw, "display.mode", "layout"));
+    /**
+     * 把解析出来的扁平表变成配置对象。
+     *
+     * @param raw      文件（或资源文件）里的键值
+     * @param fallback 键缺失时的默认值来源 —— 正常是 {@link #defaults()}（= 资源文件），
+     *                 极端兜底是 {@link #builtin()}。🔴 别在这里调 {@code defaults()}：
+     *                 它会再走一遍本方法，直接无限递归。
+     * @param logger   非 null 时把「值写歪了、被夹了」这类问题报出来（默认值解析时传 null）
+     */
+    private static Configuration fromMap(final Map<String, Object> raw, final Configuration fallback,
+                                         final Logger logger) {
+        final String modeRaw = TomlLite.string(raw, "display.mode", fallback.mode().key());
+        final Mode mode = Mode.parse(modeRaw);
+        // 写歪了会被静默当成 layout，服主完全看不出（比如 layuot / grid / fat）
+        if (logger != null && !mode.key().equals(modeRaw.trim().toLowerCase(Locale.ROOT))) {
+            logger.warn("[vtabsort] [display].mode = \"" + modeRaw + "\" 认不出来（只有 layout / flat / auto），"
+                    + "已按 " + mode.key() + " 处理。");
+        }
         // 还没进子服的玩家（刚连上 / 正在切服）默认不显示 —— layout 早期就是这么做的
-        final boolean hideLoading = TomlLite.bool(raw, "display.hide-loading", true);
+        final boolean hideLoading = TomlLite.bool(raw, "display.hide-loading", fallback.hideLoading());
 
-        final int maxColumns = (int) clamp(TomlLite.integer(raw, "layout.max-columns", 4), 1, 10);
-        final int rows = (int) clamp(TomlLite.integer(raw, "layout.rows", 20), 5, 40);
+        final int maxColumns = (int) clamp(
+                TomlLite.integer(raw, "layout.max-columns", fallback.maxColumns()), 1, 10);
+        // 🔴 行数上限是客户端写死的 20（见 CLIENT_MAX_ROWS）：配更大不会"每列多放几个人"，
+        //    只会让客户端硬折列、整张表错位，而且不会触发 80 条超限警告。夹住 + 报一次。
+        final long rowsRaw = TomlLite.integer(raw, "layout.rows", fallback.rows());
+        final int rows = (int) clamp(rowsRaw, 5, CLIENT_MAX_ROWS);
+        if (logger != null && rowsRaw > CLIENT_MAX_ROWS) {
+            logger.warn("[vtabsort] [layout].rows = " + rowsRaw + " 超过客户端硬上限 "
+                    + CLIENT_MAX_ROWS + " 行 —— 客户端会把超过 " + CLIENT_MAX_ROWS
+                    + " 行的网格强制折列，整张表会错位（还不会触发 80 条超限警告）。"
+                    + "已按 " + CLIENT_MAX_ROWS + " 处理。");
+        }
         final String headerFormat = TomlLite.string(raw, "layout.header-format",
-                defaults().headerFormat());
+                fallback.headerFormat());
         final String layoutPrefix = TomlLite.string(raw, "layout.prefix-format",
-                defaults().layoutPrefix());
-        final boolean separator = TomlLite.bool(raw, "layout.separator", true);
+                fallback.layoutPrefix());
+        final boolean separator = TomlLite.bool(raw, "layout.separator", fallback.separator());
         // 信号延迟：-1 = 无信号（客户端画红叉），0..60000 = 正常延迟。
         // 🔴 下限必须留 -1：以前夹到 0，写 -1 会被悄悄改成满格，红叉配不出来。
-        final int blankPing = (int) clamp(TomlLite.integer(raw, "layout.blank-ping", 0), -1, 60_000);
+        final int blankPing = (int) clamp(
+                TomlLite.integer(raw, "layout.blank-ping", fallback.blankPing()), -1, 60_000);
         // 列头的信号延迟单独配（不写就跟着 blank-ping 走，老配置观感不变）
         final int headerPing = (int) clamp(
                 TomlLite.integer(raw, "layout.header-ping", blankPing), -1, 60_000);
-        final boolean showHat = TomlLite.bool(raw, "layout.show-hat", true);
+        final boolean showHat = TomlLite.bool(raw, "layout.show-hat", fallback.showHat());
         // 皮肤：这里只留原文，解析/联网/缓存交给 SkinCache
         final String skinSig = TomlLite.string(raw, "layout.default-skin-signature", "").trim();
         final String skinSpec = TomlLite.string(raw, "layout.default-skin", "").trim();
@@ -548,11 +639,11 @@ public final class Configuration {
             serverSkins.put(rest, spec);
         }
 
-        final String flatPrefix = TomlLite.string(raw, "flat.prefix-format", defaults().flatPrefix());
-        final boolean flatSort = TomlLite.bool(raw, "flat.sort", true);
+        final String flatPrefix = TomlLite.string(raw, "flat.prefix-format", fallback.flatPrefix());
+        final boolean flatSort = TomlLite.bool(raw, "flat.sort", fallback.flatSort());
 
-        final boolean byJoin = "join".equalsIgnoreCase(
-                TomlLite.string(raw, "general.same-server-order", "name").trim());
+        final boolean byJoin = "join".equalsIgnoreCase(TomlLite.string(raw, "general.same-server-order",
+                fallback.sameServerByJoin() ? "join" : "name").trim());
 
         // [servers.names] 整段：键是服名（转小写），值是显示名
         final Map<String, String> names = new TreeMap<>();
@@ -568,23 +659,27 @@ public final class Configuration {
         }
 
         final Map<String, String> messages = new LinkedHashMap<>();
-        messages.put("reloaded", TomlLite.string(raw, "messages.reloaded", defaults().message("reloaded")));
-        messages.put("reload-failed", TomlLite.string(raw, "messages.reload-failed", defaults().message("reload-failed")));
-        messages.put("no-permission", TomlLite.string(raw, "messages.no-permission", defaults().message("no-permission")));
-        messages.put("usage", TomlLite.string(raw, "messages.usage", defaults().message("usage")));
+        messages.put("reloaded", TomlLite.string(raw, "messages.reloaded", fallback.message("reloaded")));
+        messages.put("reload-failed", TomlLite.string(raw, "messages.reload-failed", fallback.message("reload-failed")));
+        messages.put("no-permission", TomlLite.string(raw, "messages.no-permission", fallback.message("no-permission")));
+        messages.put("usage", TomlLite.string(raw, "messages.usage", fallback.message("usage")));
 
-        final boolean autoReload = TomlLite.bool(raw, "advanced.auto-reload", false);
-        final int interval = (int) Math.max(1L, TomlLite.integer(raw, "advanced.auto-reload-interval-seconds", 3L));
-        final int delay = (int) clamp(TomlLite.integer(raw, "advanced.refresh-delay-ms", 200), 0, 10_000);
-        final int reassert = (int) clamp(TomlLite.integer(raw, "advanced.reassert-seconds", 3), 0, 60);
+        final boolean autoReload = TomlLite.bool(raw, "advanced.auto-reload", fallback.autoReload());
+        final int interval = (int) Math.max(1L, TomlLite.integer(raw, "advanced.auto-reload-interval-seconds",
+                fallback.autoReloadIntervalSeconds()));
+        final int delay = (int) clamp(TomlLite.integer(raw, "advanced.refresh-delay-ms",
+                fallback.refreshDelayMs()), 0, 10_000);
+        final int reassert = (int) clamp(TomlLite.integer(raw, "advanced.reassert-seconds",
+                fallback.reassertSeconds()), 0, 60);
 
         // header/footer：TAB 卸载后的接手方案。行内支持 & 码 / &#hex /
         // <#hex>渐变</#hex>；占位符见 HeaderFooter.variables()。
-        final boolean hfEnabled = TomlLite.bool(raw, "header-footer.enabled", true);
+        final boolean hfEnabled = TomlLite.bool(raw, "header-footer.enabled",
+                fallback.headerFooterEnabled());
         final List<String> header = TomlLite.list(raw, "header-footer.header",
-                defaults().headerLines());
+                fallback.headerLines());
         final List<String> footer = TomlLite.list(raw, "header-footer.footer",
-                defaults().footerLines());
+                fallback.footerLines());
 
         return new Configuration(mode, maxColumns, rows, headerFormat, layoutPrefix, separator,
                 blankPing, headerPing, showHat, skinSpec, skinSig,
