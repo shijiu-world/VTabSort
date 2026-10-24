@@ -3,7 +3,9 @@
 #  三个模式（[display].mode，也可以用 /vts mode <layout|flat|auto> 切）：
 #    layout = 固定网格：每列头顶子服名，假人补满空槽
 #    flat   = 普通列表：名字前缀子服名 + 可选按人数排序
-#    auto   = 在线 ≤ [layout].rows 走 flat，超过走 layout
+#    auto   = 在线 ≤ [layout].rows 走 flat，超过走 layout；
+#             网格超过客户端上限 80 格时也退回 flat（客户端只渲染前 80 条，
+#             硬画网格会整张表错位 —— 这条是保护，不是可选项）
 #  实现：1.21.2+ 的 listOrder 协议字段 + 假条目，不碰 scoreboard team。
 #  ⚠️ # 之后是注释；没加引号的值不要在同一行再写 #。
 # ============================================================
@@ -28,8 +30,8 @@ header-format = " &7[#name#&7] - &6#count# &7&l人"   # 列头；#name# = 子服
 prefix-format = ""     # 玩家名字前缀，默认空 = 不加。#name# = 所在子服显示名。
                        #   ⚠️ 装了 TAB 就保持空：两边都写显示名会互相覆盖、前缀来回闪。
 separator = true       # 共享列里两个子服分节之间空一行
-blank-ping = 0         # 填充假人的信号延迟（毫秒；0 = 满格）
-header-ping = 0        # 列头右边信号图标的延迟（毫秒）；不写就跟 blank-ping 一样
+blank-ping = 0         # 填充假人的信号延迟（毫秒；0 = 满格，-1 = 无信号=红叉）
+header-ping = 0        # 列头右边信号图标的延迟（毫秒）；-1 = 红叉，不写就跟着 blank-ping
 show-hat = true        # 皮肤第二层（帽子层）要不要画。占位皮肤的猫耳画在第二层，
                        #   关了就看不见。真人的条目也会一并置成开。
 #   default-skin = 填充假人的皮肤，五种写法：

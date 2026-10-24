@@ -212,11 +212,9 @@ final class LayoutManager {
         }
         // 🔴 客户端硬上限：PlayerTabOverlay#getPlayerInfos 里 `.limit(80)`，
         //    超过 80 条的会被直接丢掉 → 网格只剩前 80 格，后面整段错位。
-        if (total > 80) {
-            logger.warn("[vtabsort] 网格 " + colDescs.size() + " 列 × " + r + " 行 = " + total
-                    + " 格，超过客户端上限 80 条（PlayerTabOverlay 的 limit(80)）："
-                    + "超出的格子会被客户端丢弃、整张表错位。请调小 [layout].max-columns / rows。");
-        }
+        //    ⚠️ 这里不 WARN：每轮都会 build，打日志会刷屏。超限的处理和提示
+        //    统一在 VTabSort（auto 自动退回 flat / 显式 layout 提示调小），
+        //    见 VTabSort#decide 和 #warnOverflowOnce。
         return new LayoutModel(slots, orders, hidden, colDescs, r, !plan.fitted());
     }
 
@@ -466,6 +464,9 @@ final class LayoutManager {
                     }
                 }
             } else {
+                // 列头槽（server != null）用 [layout].header-ping；其余假条目
+                // （demo 虚拟玩家 / 分节空行 / 补满的空白格）用 blank-ping。
+                final int wantPing = slot.server != null ? cfg.headerPing() : cfg.blankPing();
                 final TabListEntry entry = tabList.getEntry(fakeId).orElse(null);
                 // 🔴 列头会换服：人数一变，列的左右顺序就变，同一个槽位下标可能
                 //    从「大厅的列头」变成「生存的列头」。显示名能 setDisplayName 改，
@@ -474,12 +475,14 @@ final class LayoutManager {
                 if (entry == null || !skinMatches(entry, slot.server)) {
                     removeFake(tabList, fakeId);
                     // 列头的信号延迟单独配（[layout].header-ping），不跟填充假人共用
-                    addFake(tabList, i, order, slot.display, cfg, slot.server, cfg.headerPing());
+                    addFake(tabList, i, order, slot.display, cfg, slot.server, wantPing);
                 } else {
                     if (!Objects.equals(entry.getDisplayNameComponent().orElse(null), slot.display)) {
                         setDisplay(entry, slot.display);
                     }
                     applySlotState(entry, order, cfg.showHat());
+                    // 改 header-ping / blank-ping 后 reload 立即生效，不用等条目重建
+                    applyFakePing(entry, wantPing);
                 }
             }
         }
@@ -568,28 +571,42 @@ final class LayoutManager {
                 .thenComparingInt(e -> e.getGameMode() == 3 ? 1 : 0)
                 .thenComparing(e -> e.getProfile().getName(), String.CASE_INSENSITIVE_ORDER));
 
-        final int slots = listed.size();
-        int rows = slots;
+        // 🔴 客户端只渲染前 80 条（PlayerTabOverlay#getPlayerInfos 的 limit(80)），
+        //    而且网格形状是按**截断后**的条数推的 —— 这里必须照做，否则 verify
+        //    算出来的列/行跟玩家屏幕上看到的不一样，越验越乱。
+        final int listedCount = listed.size();
+        final int rendered = Math.min(listedCount, Configuration.CLIENT_MAX_ENTRIES);
+        int rows = rendered;
         int cols = 1;
         while (rows > 20) {
-            rows = (slots + ++cols - 1) / cols;
+            rows = (rendered + ++cols - 1) / cols;
         }
         final int rowsUsed = Math.max(rows, 1);
 
         final List<String> out = new ArrayList<>();
-        out.add("客户端列表：" + slots + " 条 listed（另有 " + unlisted.size()
-                + " 条 listed=false）→ 客户端按这个数算网格：" + cols + " 列 × " + rowsUsed + " 行");
+        out.add("客户端列表：" + listedCount + " 条 listed（另有 " + unlisted.size()
+                + " 条 listed=false）"
+                + (listedCount > Configuration.CLIENT_MAX_ENTRIES
+                        ? "；⚠️ 超过客户端上限 " + Configuration.CLIENT_MAX_ENTRIES + " 条 → 只渲染前 "
+                                + rendered + " 条，后面 " + (listedCount - rendered) + " 条谁也看不见"
+                        : "")
+                + " → 客户端按 " + rendered + " 条算网格：" + cols + " 列 × " + rowsUsed + " 行");
         out.add("插件模型：" + model.slots.size() + " 格（" + model.columnCount + " 列 × "
                 + model.rows + " 行）"
-                + (slots == model.slots.size() ? " —— 对得上" : " —— ⚠️ 对不上，客户端会整体错位"));
-        for (int i = 0; i < slots; i++) {
+                + (rendered == model.slots.size() ? " —— 对得上"
+                        : " —— ⚠️ 对不上，客户端会整体错位"));
+        for (int i = 0; i < listedCount; i++) {
             final TabListEntry e = listed.get(i);
             final String name = e.getDisplayNameComponent()
                     .map(c -> PlainTextComponentSerializer.plainText().serialize(c))
                     .orElse(e.getProfile().getName());
-            final StringBuilder sb = new StringBuilder("  #").append(i)
-                    .append(" 列").append(i / rowsUsed + 1).append(" 行").append(i % rowsUsed + 1)
-                    .append(" order=").append(e.getListOrder())
+            final StringBuilder sb = new StringBuilder("  #").append(i);
+            if (i < rendered) {
+                sb.append(" 列").append(i / rowsUsed + 1).append(" 行").append(i % rowsUsed + 1);
+            } else {
+                sb.append(" （超上限，客户端不渲染）");
+            }
+            sb.append(" order=").append(e.getListOrder())
                     .append("  ").append(name.isEmpty() ? "(空)" : name);
             if (i >= model.slots.size()) {
                 sb.append("   ⚠️ 超出插件模型（多余条目）");
@@ -664,7 +681,25 @@ final class LayoutManager {
         }
     }
 
-    /** 拔掉某一格上可能残留的占位假条目（换用真人 profile 之后要清）。 */    private static void removeFake(final TabList tabList, final UUID fakeId) {
+    /**
+     * 假条目（列头 / demo 虚拟玩家 / 填充空白）的延迟校准。
+     *
+     * <p>假条目的延迟只有本插件会写，没有别人覆盖；但只要条目已存在，重建分支
+     * 就不会走 —— 改 {@code header-ping} 后 reload 会看起来"没生效"。每轮比一下，
+     * 不一样就推一次（{@code -1} = 无信号，客户端画红叉）。
+     */
+    private static void applyFakePing(final TabListEntry entry, final int ping) {
+        if (entry.getLatency() == ping) {
+            return;
+        }
+        try {
+            entry.setLatency(ping);
+        } catch (final Exception ignored) {
+        }
+    }
+
+    /** 拔掉某一格上可能残留的占位假条目（换用真人 profile 之后要清）。 */
+    private static void removeFake(final TabList tabList, final UUID fakeId) {
         if (tabList.containsEntry(fakeId)) {
             try {
                 tabList.removeEntry(fakeId);

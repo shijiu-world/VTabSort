@@ -89,6 +89,13 @@ public final class VTabSort {
      * 命令成功时已经把新值写回文件了）。
      */
     private volatile Configuration.Mode modeOverride;
+    /**
+     * 上一轮是否已经就「超过客户端 80 条上限」提示过。
+     *
+     * <p>rebuild 每秒都在跑，超限状态在一条 log 里只需要说一次 —— 状态变化
+     * （超限 ↔ 不超限）才打，否则日志会被刷满。
+     */
+    private volatile boolean overflowWarned;
     /** demo 虚拟玩家模拟器（/vts demo）。 */
     private final DemoSim demo = new DemoSim();
     /** 流动模拟的定时任务（/vts demo off 时取消）。 */
@@ -164,8 +171,8 @@ public final class VTabSort {
      */
     private void rebuildNow() {
         final Configuration cfg = config;
-        // demo 虚拟玩家计入 auto 的翻面判定（模拟人多时的行为才算数）
-        final Configuration.Mode effective = effectiveMode(cfg, online());
+        final Decision decision = decide(cfg);
+        final Configuration.Mode effective = decision.mode;
         final Configuration.Mode previous = appliedMode.getAndSet(effective);
         if (previous != null && previous != effective) {
             if (effective == Configuration.Mode.LAYOUT) {
@@ -174,8 +181,9 @@ public final class VTabSort {
                 layoutManager.stripAll();         // layout→flat：拔全部假条目
             }
         }
+        warnOverflowOnce(cfg, decision);
         if (effective == Configuration.Mode.LAYOUT) {
-            layoutManager.applyAll(layoutManager.build(cfg, demo.snapshot()), cfg);
+            layoutManager.applyAll(decision.model, cfg);
         } else {
             flatManager.applyAll(cfg);
         }
@@ -205,7 +213,83 @@ public final class VTabSort {
         if (mode != Configuration.Mode.AUTO) {
             return mode;
         }
-        return onlineCount <= cfg.rows() ? Configuration.Mode.FLAT : Configuration.Mode.LAYOUT;
+        // 阈值 + 客户端上限（80 条）的判定都在 autoLanding 里，见它的注释
+        return Configuration.autoLanding(onlineCount, cfg.rows());
+    }
+
+    /**
+     * 一轮的落地判定：模式 + （要走网格时）已经建好的模型。
+     *
+     * <p>为什么不能只看人数：客户端上限 80 是<b>条目数</b>，列头、分节空行、
+     * 补满整列的空白假条目都算。4 列 × 20 行 = 80 格里，每列一个列头 → 真人位
+     * 只有 76 个；5 个子服都有人时，第 77 个人进服就得开第 5 列（5 × 17 = 85 格）
+     * —— 人数没到 80，网格却已经超了。所以 auto 在建完模型后还要再比一次格数。
+     *
+     * <p>显式配 layout 的人不弹（他要的就是网格），由 {@link #warnOverflowOnce} 提示。
+     */
+    private Decision decide(final Configuration cfg) {
+        final Configuration.Mode mode = effectiveMode(cfg, online());
+        if (mode != Configuration.Mode.LAYOUT) {
+            return new Decision(mode, null);
+        }
+        final LayoutModel model = layoutManager.build(cfg, demo.snapshot());
+        final boolean tooMany = model.slots.size() > Configuration.CLIENT_MAX_ENTRIES;
+        if (tooMany && configuredMode(cfg) == Configuration.Mode.AUTO) {
+            return new Decision(Configuration.Mode.FLAT, model); // 模型留着，日志/命令要说清超了多少
+        }
+        return new Decision(Configuration.Mode.LAYOUT, model);
+    }
+
+    /**
+     * 超过客户端 80 条上限时提示一次（状态变化才打，别刷屏）。
+     *
+     * <p>auto 的情况已经自动退回 flat 了，这里只是把原因和数字讲清楚；
+     * 显式 layout 的情况没有退路，得让服主知道会错位、该调哪个键。
+     */
+    private void warnOverflowOnce(final Configuration cfg, final Decision decision) {
+        final boolean auto = configuredMode(cfg) == Configuration.Mode.AUTO;
+        final int online = online();
+        final boolean overflow = decision.mode == Configuration.Mode.FLAT
+                ? auto && (decision.model != null || online > Configuration.CLIENT_MAX_ENTRIES)
+                : decision.model != null && decision.model.slots.size() > Configuration.CLIENT_MAX_ENTRIES;
+        if (overflow == overflowWarned) {
+            return;
+        }
+        overflowWarned = overflow;
+        if (!overflow) {
+            return;
+        }
+        final String what = decision.model != null
+                ? "网格 " + decision.model.columnCount + " 列 × " + decision.model.rows + " 行 = "
+                        + decision.model.slots.size() + " 格"
+                : "在线 " + online + " 人（含模拟）";
+        final String limit = "客户端上限 " + Configuration.CLIENT_MAX_ENTRIES
+                + " 条（PlayerTabOverlay 的 limit(80)）";
+        if (auto) {
+            logger.warn("[vtabsort] " + what + "，超过" + limit + "：auto 已自动退回 flat。"
+                    + "flat 里排不下的人客户端同样不显示，但不会像网格那样整张表错位；"
+                    + "想继续用网格请调小 [layout].max-columns / rows。");
+        } else {
+            logger.warn("[vtabsort] " + what + "，超过" + limit + "：多出来的条目客户端会直接丢掉，"
+                    + "整张网格会错位。请调小 [layout].max-columns / rows，"
+                    + "或把 [display].mode 改成 auto（超限时自动退回 flat）。");
+        }
+    }
+
+    /**
+     * 一次判定结果。
+     *
+     * <p>{@code model} 只在「本来要画网格」时非 null —— 哪怕因为超 80 条被弹回
+     * flat，也把模型带出来，日志和 {@code /vts layout} 才能说清是几列几行超的。
+     */
+    private static final class Decision {
+        final Configuration.Mode mode;
+        final LayoutModel model;
+
+        Decision(final Configuration.Mode mode, final LayoutModel model) {
+            this.mode = mode;
+            this.model = model;
+        }
     }
 
     /**
@@ -218,10 +302,16 @@ public final class VTabSort {
     private void switchMode(final CommandSource source, final String raw) {
         if (raw == null || raw.isEmpty()) {
             final Configuration cfg = config;
+            final Decision decision = decide(cfg);
+            final boolean auto = configuredMode(cfg) == Configuration.Mode.AUTO;
             send(source, "当前模式：" + configuredMode(cfg).key()
-                    + (cfg.mode() == Configuration.Mode.AUTO
-                            ? "（配置 auto，在线 " + online() + " 人 → 实际 "
-                                    + effectiveMode(cfg, online()).key() + "）"
+                    + (auto
+                            ? "（在线 " + online() + " 人 → 实际 " + decision.mode.key()
+                                    + (decision.mode == Configuration.Mode.FLAT && decision.model != null
+                                            ? "，网格 " + decision.model.slots.size() + " 格超上限 "
+                                                    + Configuration.CLIENT_MAX_ENTRIES
+                                            : "")
+                                    + "）"
                             : "")
                     + "；切换：/vts mode layout|flat|auto");
             return;
@@ -429,25 +519,38 @@ public final class VTabSort {
     private void printLayout(final CommandSource source) {
         final Configuration cfg = config;
         final int online = online();
-        final Configuration.Mode effective = effectiveMode(cfg, online);
+        final Decision decision = decide(cfg);
         if (configuredMode(cfg) == Configuration.Mode.AUTO) {
             send(source, "auto 模式：在线 " + online
-                    + " 人（含模拟），阈值 " + cfg.rows() + " → 当前落地 " + effective.key());
+                    + " 人（含模拟），阈值 " + cfg.rows() + " → 当前落地 " + decision.mode.key()
+                    + (decision.mode == Configuration.Mode.FLAT && decision.model != null
+                            ? "（网格 " + decision.model.columnCount + " 列 × " + decision.model.rows
+                                    + " 行 = " + decision.model.slots.size() + " 格，超客户端上限 "
+                                    + Configuration.CLIENT_MAX_ENTRIES + " → 自动退回 flat）"
+                            : online > Configuration.CLIENT_MAX_ENTRIES
+                                    ? "（人数超客户端上限 " + Configuration.CLIENT_MAX_ENTRIES
+                                            + " 条 → 自动退回 flat）"
+                                    : ""));
         }
         if (demo.isActive()) {
             send(source, "demo 模拟中：" + demo.describe());
         }
-        if (effective != Configuration.Mode.LAYOUT) {
+        if (decision.mode != Configuration.Mode.LAYOUT) {
             send(source, "当前是 flat 展示：排序 " + (cfg.flatSort() ? "开" : "关")
                     + "，前缀格式 " + cfg.flatPrefix());
             return;
         }
-        final LayoutModel model = layoutManager.build(cfg, demo.snapshot());
+        final LayoutModel model = decision.model;
         send(source, "layout 网格：" + model.columnCount + " 列 × " + model.rows
                 + " 行（行数上限 " + cfg.rows() + "，列预算 " + cfg.maxColumns()
                 + (model.exceedsColumns ? "，内容塞不下已超列预算" : "")
                 + "），槽位 " + model.slots.size() + "，隐藏 " + model.hidden.size()
                 + (cfg.layoutPrefix().isEmpty() ? "" : "，玩家前缀 " + cfg.layoutPrefix()));
+        if (model.slots.size() > Configuration.CLIENT_MAX_ENTRIES) {
+            send(source, "⚠️ 槽位 " + model.slots.size() + " 超过客户端上限 "
+                    + Configuration.CLIENT_MAX_ENTRIES + " 条：多出来的格子客户端不渲染、整张网格会错位。"
+                    + "调小 [layout].max-columns / rows，或改用 [display].mode = \"auto\"。");
+        }
         for (int i = 0; i < model.columns.size(); i++) {
             final StringBuilder sb = new StringBuilder("列" + (i + 1) + "：");
             for (final LayoutModel.SectionDesc sd : model.columns.get(i).sections) {
@@ -487,11 +590,17 @@ public final class VTabSort {
                 return;
             }
         }
-        if (effectiveMode(cfg, online()) != Configuration.Mode.LAYOUT) {
-            send(source, "注意：当前落地模式不是 layout（flat 没有网格），verify 只对 layout 有意义。");
+        final Decision decision = decide(cfg);
+        if (decision.mode != Configuration.Mode.LAYOUT) {
+            send(source, "注意：当前落地模式不是 layout（flat 没有网格），verify 只对 layout 有意义。"
+                    + (decision.model != null
+                            ? "（网格 " + decision.model.slots.size() + " 格超过客户端上限 "
+                                    + Configuration.CLIENT_MAX_ENTRIES + "，auto 已自动退回 flat）"
+                            : ""));
         }
-        final List<String> lines = layoutManager.verify(target,
-                layoutManager.build(cfg, demo.snapshot()));
+        final LayoutModel model = decision.model != null
+                ? decision.model : layoutManager.build(cfg, demo.snapshot());
+        final List<String> lines = layoutManager.verify(target, model);
         send(source, "== " + target.getUsername() + " 的 Tab 实况 ==");
         for (final String line : lines) {
             send(source, line);
@@ -506,7 +615,8 @@ public final class VTabSort {
             case LAYOUT -> "模式 layout（固定网格，列头=子服名，人数降序分列，超高续列"
                     + (cfg.layoutPrefix().isEmpty() ? "）" : "，玩家前缀 " + cfg.layoutPrefix() + "）");
             case FLAT -> "模式 flat（前缀列表" + (cfg.flatSort() ? "，按人数降序排序" : "，原版顺序") + "）";
-            case AUTO -> "模式 auto（≤" + cfg.rows() + " 人走 flat，超过走 layout）"
+            case AUTO -> "模式 auto（≤" + cfg.rows() + " 人走 flat，超过走 layout；"
+                    + "网格超过客户端上限 " + Configuration.CLIENT_MAX_ENTRIES + " 格时也退回 flat）"
                     + "；当前在线 " + online + " → " + effectiveMode(cfg, online).key();
         };
     }
@@ -532,6 +642,8 @@ public final class VTabSort {
         config = result.config();
         // 文件是唯一真相：/vts mode 成功时已经把新值写回文件了，覆盖到这里作废。
         modeOverride = null;
+        // 配置换了，超限警告重新算一遍（改了 max-columns/rows 之后该提示就提示）
+        overflowWarned = false;
         lastModified = configMtime();
         // layout 玩家前缀改了（加了或删了）：先把显示名打回裸名，让下面重建时
         // 干净地写一遍 —— 显示名能改，但删前缀之后旧前缀会一直挂在条目上。

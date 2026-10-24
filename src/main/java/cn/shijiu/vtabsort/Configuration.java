@@ -28,6 +28,20 @@ import java.util.TreeMap;
  */
 public final class Configuration {
 
+    /**
+     * 客户端 Tab 能渲染的条目上限（硬编码在客户端里，配不了）。
+     *
+     * <p>26.2 的 {@code PlayerTabOverlay#getPlayerInfos()}：
+     * <pre>
+     *   connection.getListedOnlinePlayers().stream().sorted(PLAYER_COMPARATOR).limit(80L)
+     * </pre>
+     * 先按 listOrder 降序（值大的在前）排，再取前 80 条 —— 第 81 条起<b>直接不渲染</b>，
+     * 而且客户端拿这 80 条反推网格形状（80 → 4 列 × 20 行），插件按更大的网格
+     * 发的顺序就会整张表错位。80 是<b>条目数</b>：列头、分节空行、补满整列的空白
+     * 假条目全都算，所以真人位实际只有 70 多个。
+     */
+    static final int CLIENT_MAX_ENTRIES = 80;
+
     /** 展示模式。auto = 按在线人数在 flat / layout 之间自己切。 */
     public enum Mode {
         LAYOUT, FLAT, AUTO;
@@ -44,6 +58,23 @@ public final class Configuration {
         public String key() {
             return name().toLowerCase(Locale.ROOT);
         }
+    }
+
+    /**
+     * auto 模式的落地：在线人数 ≤ rows 走 flat，否则走网格；但人数超过客户端
+     * 上限（80 条）时不管 rows 多大都必须回 flat —— 网格每格一个人也装不下，
+     * 硬画只会被客户端截断 + 整张表错位。
+     *
+     * <p>纯函数，和 proxy 无关，方便单测边界（20 / 21 / 80 / 81）。
+     *
+     * @param online 在线人数（含 demo 虚拟玩家）
+     * @param rows   {@code [layout].rows}，也是 auto 的切换阈值
+     */
+    static Mode autoLanding(final int online, final int rows) {
+        if (online > CLIENT_MAX_ENTRIES) {
+            return Mode.FLAT;
+        }
+        return online <= rows ? Mode.FLAT : Mode.LAYOUT;
     }
 
     /** 加载结果：config 可能为旧的（出错时），error 不为空说明这次没能读成。 */
@@ -467,10 +498,12 @@ public final class Configuration {
         final String layoutPrefix = TomlLite.string(raw, "layout.prefix-format",
                 defaults().layoutPrefix());
         final boolean separator = TomlLite.bool(raw, "layout.separator", true);
-        final int blankPing = (int) clamp(TomlLite.integer(raw, "layout.blank-ping", 0), 0, 60_000);
+        // 信号延迟：-1 = 无信号（客户端画红叉），0..60000 = 正常延迟。
+        // 🔴 下限必须留 -1：以前夹到 0，写 -1 会被悄悄改成满格，红叉配不出来。
+        final int blankPing = (int) clamp(TomlLite.integer(raw, "layout.blank-ping", 0), -1, 60_000);
         // 列头的信号延迟单独配（不写就跟着 blank-ping 走，老配置观感不变）
         final int headerPing = (int) clamp(
-                TomlLite.integer(raw, "layout.header-ping", blankPing), 0, 60_000);
+                TomlLite.integer(raw, "layout.header-ping", blankPing), -1, 60_000);
         final boolean showHat = TomlLite.bool(raw, "layout.show-hat", true);
         // 皮肤：这里只留原文，解析/联网/缓存交给 SkinCache
         final String skinSig = TomlLite.string(raw, "layout.default-skin-signature", "").trim();
