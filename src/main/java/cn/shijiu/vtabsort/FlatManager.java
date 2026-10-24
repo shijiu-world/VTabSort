@@ -57,8 +57,11 @@ final class FlatManager {
                     //    listOrder 也没人设 → 排在所有人后面，看起来就是个幽灵
                     //    （2026-10-24 截图里的 Ku_Gu_Gu）。和 layout 单开一节的
                     //    做法对齐：让人一眼看出是「还没进服」，而不是"没前缀的神秘人"。
+                    //    前缀可以用 [flat].loading-prefix 单独配（空 = 跟 flat-prefix 一样）。
+                    final String fmt = cfg.flatLoadingPrefix().isEmpty()
+                            ? cfg.flatPrefix() : cfg.flatLoadingPrefix();
                     names.put(p.getUniqueId(), Colors.prefixed(
-                            cfg.flatPrefix().replace("#name#", cfg.loadingDisplayName()),
+                            fmt.replace("#name#", cfg.loadingDisplayName()),
                             p.getUsername()));
                 }
                 continue;

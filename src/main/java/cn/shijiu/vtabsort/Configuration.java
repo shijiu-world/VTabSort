@@ -101,6 +101,15 @@ public final class Configuration {
     private final int rows;
     private final String headerFormat;
     /**
+     * 「加载中」那一列的列头格式（{@code [layout].loading-header-format}）。
+     *
+     * <p>空 = 跟 {@code [layout].header-format} 一样，只是 {@code #name#} 换成
+     * {@code [servers.names].loading}（默认「加载中」）。想让这一列单独换个
+     * 颜色/写法（比如整行「&7正在加载…」）就写这个键。
+     * 只在 {@code hide-loading = false} 时才有意义。
+     */
+    private final String loadingHeaderFormat;
+    /**
      * layout 模式下<b>玩家名字</b>的前缀（{@code [layout].prefix-format}，默认空）。
      *
      * <p>和 flat 的 {@code [flat].prefix-format} 各管一段：这个只作用于网格里的
@@ -139,6 +148,14 @@ public final class Configuration {
     /** 每个子服列头头像的签名（[servers.skins.<服名>-signature]，键已转小写）。 */
     private final Map<String, String> serverSkinSignatures;
     private final String flatPrefix;
+    /**
+     * 加载中玩家在 flat 里的前缀（{@code [flat].loading-prefix}）。
+     *
+     * <p>空 = 跟 {@code [flat].prefix-format} 一样、{@code #name#} 换成
+     * {@code [servers.names].loading}（默认「加载中」）。想让这些人换个颜色
+     * 单独区分就写这个键 —— 只在 {@code hide-loading = false} 时才有意义。
+     */
+    private final String flatLoadingPrefix;
     private final boolean flatSort;
     private final Map<String, String> serverNames;
     private final boolean sameServerByJoin;
@@ -164,7 +181,8 @@ public final class Configuration {
     private final boolean hideLoading;
 
     private Configuration(final Mode mode, final int maxColumns, final int rows,
-                          final String headerFormat, final String layoutPrefix,
+                          final String headerFormat, final String loadingHeaderFormat,
+                          final String layoutPrefix,
                           final boolean separator,
                           final int blankPing, final int headerPing,
                           final boolean showHat, final String skinSpec,
@@ -172,7 +190,8 @@ public final class Configuration {
                           final String columnSkin, final String columnSkinSignature,
                           final Map<String, String> serverSkins,
                           final Map<String, String> serverSkinSignatures,
-                          final String flatPrefix, final boolean flatSort,
+                          final String flatPrefix, final String flatLoadingPrefix,
+                          final boolean flatSort,
                           final Map<String, String> serverNames,
                           final boolean sameServerByJoin,
                           final Map<String, String> messages,
@@ -185,6 +204,7 @@ public final class Configuration {
         this.maxColumns = maxColumns;
         this.rows = rows;
         this.headerFormat = headerFormat;
+        this.loadingHeaderFormat = loadingHeaderFormat;
         this.layoutPrefix = layoutPrefix;
         this.separator = separator;
         this.blankPing = blankPing;
@@ -197,6 +217,7 @@ public final class Configuration {
         this.serverSkins = serverSkins;
         this.serverSkinSignatures = serverSkinSignatures;
         this.flatPrefix = flatPrefix;
+        this.flatLoadingPrefix = flatLoadingPrefix;
         this.flatSort = flatSort;
         this.serverNames = serverNames;
         this.sameServerByJoin = sameServerByJoin;
@@ -227,9 +248,9 @@ public final class Configuration {
         messages.put("no-permission", "你没有权限这么做");
         messages.put("usage", "用法：/vtabsort reload | mode <layout|flat|auto> | layout | demo | version");
         return new Configuration(Mode.LAYOUT, 4, 20,
-                "&e#name# &7· #count#", "", true,
+                "&e#name# &7· #count#", "", "", true,
                 0, 0, true, "", "", "", "", Map.of(), Map.of(),
-                "&7[&e#name#&7] ", true,
+                "&7[&e#name#&7] ", "", true,
                 names, false, messages,
                 false, 3, 200, 3,
                 true,
@@ -259,6 +280,11 @@ public final class Configuration {
 
     public String headerFormat() {
         return headerFormat;
+    }
+
+    /** 「加载中」那一列的列头格式（空 = 沿用 {@link #headerFormat()}）。 */
+    public String loadingHeaderFormat() {
+        return loadingHeaderFormat;
     }
 
     /**
@@ -332,6 +358,11 @@ public final class Configuration {
         return flatPrefix;
     }
 
+    /** flat 里「加载中」玩家的前缀（空 = 沿用 {@link #flatPrefix()}）。 */
+    public String flatLoadingPrefix() {
+        return flatLoadingPrefix;
+    }
+
     public boolean flatSort() {
         return flatSort;
     }
@@ -358,9 +389,20 @@ public final class Configuration {
         return hideLoading;
     }
 
-    /** 已知子服清单（[servers.names] 的键，已排序）——demo 模拟的玩家池。 */
+    /**
+     * 已知子服清单（[servers.names] 的键，已排序）——demo 模拟的玩家池。
+     *
+     * <p>🔴 排除 {@code loading}：它不是真子服，只是「加载中」那一节的显示名；
+     * 混进 demo 池会在网格里凭空多出一列「加载中」。
+     */
     public List<String> knownServers() {
-        return List.copyOf(serverNames.keySet());
+        final List<String> out = new ArrayList<>();
+        for (final String s : serverNames.keySet()) {
+            if (!"loading".equals(s)) {
+                out.add(s);
+            }
+        }
+        return List.copyOf(out);
     }
 
     public boolean sameServerByJoin() {
@@ -495,6 +537,10 @@ public final class Configuration {
         final int rows = (int) clamp(TomlLite.integer(raw, "layout.rows", 20), 5, 40);
         final String headerFormat = TomlLite.string(raw, "layout.header-format",
                 defaults().headerFormat());
+        // 「加载中」那一列的列头（空 = 跟 header-format 一样，只是 #name# 换成加载中）
+        // 不 trim：列头/前缀首尾的空格是有意义的（header-format 默认就带前导空格）
+        final String loadingHeaderFormat = TomlLite.string(raw,
+                "layout.loading-header-format", "");
         final String layoutPrefix = TomlLite.string(raw, "layout.prefix-format",
                 defaults().layoutPrefix());
         final boolean separator = TomlLite.bool(raw, "layout.separator", true);
@@ -538,6 +584,10 @@ public final class Configuration {
         }
 
         final String flatPrefix = TomlLite.string(raw, "flat.prefix-format", defaults().flatPrefix());
+        // 加载中玩家的前缀（空 = 沿用 flat.prefix-format，#name# 换成「加载中」）
+        // 不 trim：前缀末尾的空格就是和名字之间的间距
+        final String flatLoadingPrefix = TomlLite.string(raw,
+                "flat.loading-prefix", "");
         final boolean flatSort = TomlLite.bool(raw, "flat.sort", true);
 
         final boolean byJoin = "join".equalsIgnoreCase(
@@ -575,9 +625,11 @@ public final class Configuration {
         final List<String> footer = TomlLite.list(raw, "header-footer.footer",
                 defaults().footerLines());
 
-        return new Configuration(mode, maxColumns, rows, headerFormat, layoutPrefix, separator,
+        return new Configuration(mode, maxColumns, rows, headerFormat, loadingHeaderFormat,
+                layoutPrefix, separator,
                 blankPing, headerPing, showHat, skinSpec, skinSig,
-                columnSkin, columnSig, serverSkins, serverSigs, flatPrefix, flatSort,
+                columnSkin, columnSig, serverSkins, serverSigs,
+                flatPrefix, flatLoadingPrefix, flatSort,
                 names, byJoin, messages,
                 autoReload, interval, delay, reassert,
                 hfEnabled, header, footer, hideLoading);

@@ -351,7 +351,11 @@ final class LayoutManager {
             final Sec sec = part.sec();
             // 列头：#count# 恒为该子服总人数（续列的列头也一样，"列名不变"）。
             // 🔴 server 字段带上：列头要用**这个服的列头头像**皮肤（可单独配）。
-            slots.add(new LayoutModel.Slot(null, textComponent(cfg.headerFormat()
+            // 「加载中」那一列可以单独配列头（[layout].loading-header-format，
+            // 空 = 跟 header-format 一样，只是 #name# = 加载中的显示名）。
+            final String fmt = sec.server.isEmpty() && !cfg.loadingHeaderFormat().isEmpty()
+                    ? cfg.loadingHeaderFormat() : cfg.headerFormat();
+            slots.add(new LayoutModel.Slot(null, textComponent(fmt
                     .replace("#name#", sec.display)
                     .replace("#count#", String.valueOf(sec.count()))), null, sec.server));
             placed++;

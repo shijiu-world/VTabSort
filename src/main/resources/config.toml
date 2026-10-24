@@ -13,8 +13,9 @@
 [display]
 mode = "auto"          # layout | flat | auto（/vts mode 切换会写回这一行）
 hide-loading = true    # 隐藏「还没进任何子服」的玩家（刚连上、切服那一瞬）。
-                       #   false = 照样显示，layout 会单开一节「加载中」放最后，
-                       #   节名取 [servers.names] 里的 loading。
+                       #   false = 照样显示：layout 单开一节放最后（列头可用
+                       #   [layout].loading-header-format 单独配），flat 给他加前缀
+                       #   （[flat].loading-prefix）。名字取 [servers.names].loading。
 
 # ------------------------------------------------------------
 # layout 模式（auto 落到 layout 时同样生效）
@@ -27,6 +28,8 @@ rows = 20              # 每列行数上限（原版 20），同时是 auto 的�
                        #   开出 N 列所需的最小行数」的较大值。看到列数不对
                        #   （比如冒出 6 列）就把它改成客户端实测的行数上限。
 header-format = " &7[#name#&7] - &6#count# &7&l人"   # 列头；#name# = 子服显示名，#count# = 该服总在线
+loading-header-format = ""   # 「加载中」那一列的列头；空 = 跟 header-format 一样
+                             #   （#name# = [servers.names].loading）。只在 hide-loading=false 时有意义
 prefix-format = ""     # 玩家名字前缀，默认空 = 不加。#name# = 所在子服显示名。
                        #   ⚠️ 装了 TAB 就保持空：两边都写显示名会互相覆盖、前缀来回闪。
 separator = true       # 共享列里两个子服分节之间空一行
@@ -54,6 +57,8 @@ column-skin-signature = ""
 # ------------------------------------------------------------
 [flat]
 prefix-format = "&8[#name#&8] "   # 名字前缀；#name# = 子服显示名
+loading-prefix = ""    # 「加载中」玩家的前缀；空 = 跟上面一样（#name# = 「加载中」）。
+                       #   只在 hide-loading=false 时有意义，想换个颜色单独区分就写这个
 sort = true            # true = 按子服人数降序（平手按服名）；false = 原版顺序
 
 # ------------------------------------------------------------
@@ -93,6 +98,7 @@ starvalley = "&#fdb78e&l星露谷"
 minigame = "&#fa86a9&l电玩中心"
 bedwars = "&#fdb78e&l活动区域"
 killer = "&#fdb78e&l限时游戏"
+loading = "加载中"     # hide-loading=false 时「还没进任何子服」那批人的显示名
 
 # ------------------------------------------------------------
 # 每个子服的列头头像（键名 = 子服原名小写，写法和皮肤那几种一样）。
