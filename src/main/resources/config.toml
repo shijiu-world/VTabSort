@@ -115,7 +115,7 @@ same-server-order = "name"   # 同一子服内：name = 名字序 / join = 加�
 reloaded = "配置已重新加载，Tab 已刷新"
 reload-failed = "配置加载失败，用的还是旧配置，原因：#reason#"
 no-permission = "你没有权限这么做"
-usage = "用法：/vtabsort reload | mode <layout|flat|auto> | layout | demo | version"
+usage = "用法：/vtabsort reload | mode <layout|flat|auto> | layout | verify [玩家] | demo | version"
 
 # ------------------------------------------------------------
 #   auto-reload = 发现 config.toml 变了就自动重载（按修改时间判断）

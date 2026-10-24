@@ -6,12 +6,14 @@ import com.velocitypowered.api.proxy.player.TabList;
 import com.velocitypowered.api.proxy.player.TabListEntry;
 import com.velocitypowered.api.util.GameProfile;
 import net.kyori.adventure.text.Component;
+import net.kyori.adventure.text.serializer.plain.PlainTextComponentSerializer;
 
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -58,11 +60,15 @@ final class LayoutManager {
     private final ProxyServer proxy;
     private final Sorter sorter;
     private final SkinCache skins;
+    private final org.slf4j.Logger logger;
     /**
      * 上一轮实际用掉的槽位数。清理残留假条目时按「本轮和上一轮的较大值」扫，
      * 保证网格缩小时不留尾巴；初值取 FAKE_RANGE，顺便覆盖上任实例的可能残留。
      */
     private volatile int lastSlotCount = FAKE_RANGE;
+    /** 上一轮网格形状（列数/行数）。一变就整体重建，见 {@link #applyAll}。 */
+    private volatile int lastColumns = -1;
+    private volatile int lastRows = -1;
     /**
      * 我们替真人补建的条目（真 UUID + 真人 profile）。
      *
@@ -93,10 +99,12 @@ final class LayoutManager {
      */
     private final Map<UUID, Integer> lastPing = new ConcurrentHashMap<>();
 
-    LayoutManager(final ProxyServer proxy, final Sorter sorter, final SkinCache skins) {
+    LayoutManager(final ProxyServer proxy, final Sorter sorter, final SkinCache skins,
+                  final org.slf4j.Logger logger) {
         this.proxy = proxy;
         this.sorter = sorter;
         this.skins = skins;
+        this.logger = logger;
     }
 
     // ------------------------------------------------------------------
@@ -201,6 +209,13 @@ final class LayoutManager {
         final Set<UUID> hidden = new LinkedHashSet<>();
         for (final Player p : noServer) {
             hidden.add(p.getUniqueId());
+        }
+        // 🔴 客户端硬上限：PlayerTabOverlay#getPlayerInfos 里 `.limit(80)`，
+        //    超过 80 条的会被直接丢掉 → 网格只剩前 80 格，后面整段错位。
+        if (total > 80) {
+            logger.warn("[vtabsort] 网格 " + colDescs.size() + " 列 × " + r + " 行 = " + total
+                    + " 格，超过客户端上限 80 条（PlayerTabOverlay 的 limit(80)）："
+                    + "超出的格子会被客户端丢弃、整张表错位。请调小 [layout].max-columns / rows。");
         }
         return new LayoutModel(slots, orders, hidden, colDescs, r, !plan.fitted());
     }
@@ -391,6 +406,15 @@ final class LayoutManager {
     // ------------------------------------------------------------------
 
     void applyAll(final LayoutModel model, final Configuration cfg) {
+        // 🔴 网格「形状」变了就整体重建。逐格 diff 在换形状时容易漏下没人认领的
+        //    假条目（槽位号一移位就没人清），而客户端是**按条目总数**推网格形状的
+        //    （见 audit）——多一条整张表就错位一格。整体拔掉重发最省心：几十条，
+        //    代价可控，换来的是「形状永远精确等于 C×R」。
+        if (model.columnCount != lastColumns || model.rows != lastRows) {
+            stripAll();
+            lastColumns = model.columnCount;
+            lastRows = model.rows;
+        }
         // 清理上界取「本轮和上一轮槽位数」的较大值：网格缩短（人变少 / 配置改小）
         // 后，超出当前网格的旧假条目要按这个半径清掉。
         // 🔴 不能写死常数：demo 塞几百个虚拟玩家、或把 rows 调小时，槽位数能到
@@ -473,6 +497,129 @@ final class LayoutManager {
                 setListed(entry, false);
             }
         }
+        // 4) 对账：清掉「不该存在」的条目（多一条客户端就整体错位，见 audit 的注释）
+        audit(viewer, model);
+    }
+
+    /**
+     * 条目对账 —— 把客户端列表里「本轮不该有」的条目清掉。
+     *
+     * <p>🔴 为什么必须对账（26.2 客户端源码 `PlayerTabOverlay#extractRenderState`）：
+     * <pre>
+     *   int rows = slots = playerInfos.size();   // 只数它自己列表里的 listed 条目
+     *   int cols = 1;
+     *   while (rows &gt; 20) rows = (slots + ++cols - 1) / cols;
+     *   col = i / rows; row = i % rows;          // 列主序
+     * </pre>
+     * 网格形状<b>完全由条目总数</b>推出来，插件这边算好的「C 列 × R 行」只有在
+     * 总数正好等于 C×R 时才成立。只要客户端多一条（历史残留的假列头、早就下线
+     * 但没被收掉的条目），rows 就会 +1，<b>整张网格重排</b>：列头跑到上一列末尾、
+     * 后面每个列的内容整体错一格 —— 这就是「位置错误」。
+     *
+     * <p>清两类，都是「本来就不该在」的：
+     * <ol>
+     *   <li>我们自己的假条目（profile 名 {@code vts_sNNN}）但不在本轮槽位表里
+     *       —— 老版本/上一轮布局的残留（槽位号变了就没人认领）；</li>
+     *   <li>UUID 不是在线玩家、也不是本轮槽位的条目（下线的残影）。</li>
+     * </ol>
+     * 真实在线玩家的条目一律不动（归后端/代理管，我们只排序）。
+     */
+    private void audit(final Player viewer, final LayoutModel model) {
+        final TabList tabList = viewer.getTabList();
+        final Set<UUID> expected = new HashSet<>();
+        for (int i = 0; i < model.slots.size(); i++) {
+            final UUID player = model.slots.get(i).player;
+            expected.add(player != null ? player : fakeUuid(i));
+        }
+        expected.addAll(model.hidden);
+        int removed = 0;
+        for (final TabListEntry entry : new ArrayList<>(tabList.getEntries())) {
+            final UUID id = entry.getProfile().getId();
+            if (expected.contains(id) || proxy.getPlayer(id).isPresent()) {
+                continue; // 本轮要的 / 别人家的真人
+            }
+            try {
+                tabList.removeEntry(id);
+                removed++;
+            } catch (final Exception ignored) {
+            }
+        }
+        if (removed > 0) {
+            logger.warn("[vtabsort] " + viewer.getUsername() + " 的 Tab 里有 " + removed
+                    + " 条多余条目（历史残留），已清掉；本轮网格 " + model.slots.size() + " 格");
+        }
+    }
+
+    /**
+     * 诊断：把这个 viewer 客户端**实际**看到的样子打印出来（/vts verify）。
+     *
+     * <p>按客户端同一套规则算：先按 listOrder 降序（同值按旁观/队伍/名字），
+     * 再 `rows = ceil(n/cols)` 列主序排。和插件建模逐格对齐就能一眼看出谁多谁少。
+     */
+    List<String> verify(final Player viewer, final LayoutModel model) {
+        final TabList tabList = viewer.getTabList();
+        final List<TabListEntry> listed = new ArrayList<>();
+        final List<TabListEntry> unlisted = new ArrayList<>();
+        for (final TabListEntry entry : tabList.getEntries()) {
+            (entry.isListed() ? listed : unlisted).add(entry);
+        }
+        listed.sort(Comparator
+                .comparingInt((TabListEntry e) -> -e.getListOrder())
+                .thenComparingInt(e -> e.getGameMode() == 3 ? 1 : 0)
+                .thenComparing(e -> e.getProfile().getName(), String.CASE_INSENSITIVE_ORDER));
+
+        final int slots = listed.size();
+        int rows = slots;
+        int cols = 1;
+        while (rows > 20) {
+            rows = (slots + ++cols - 1) / cols;
+        }
+        final int rowsUsed = Math.max(rows, 1);
+
+        final List<String> out = new ArrayList<>();
+        out.add("客户端列表：" + slots + " 条 listed（另有 " + unlisted.size()
+                + " 条 listed=false）→ 客户端按这个数算网格：" + cols + " 列 × " + rowsUsed + " 行");
+        out.add("插件模型：" + model.slots.size() + " 格（" + model.columnCount + " 列 × "
+                + model.rows + " 行）"
+                + (slots == model.slots.size() ? " —— 对得上" : " —— ⚠️ 对不上，客户端会整体错位"));
+        for (int i = 0; i < slots; i++) {
+            final TabListEntry e = listed.get(i);
+            final String name = e.getDisplayNameComponent()
+                    .map(c -> PlainTextComponentSerializer.plainText().serialize(c))
+                    .orElse(e.getProfile().getName());
+            final StringBuilder sb = new StringBuilder("  #").append(i)
+                    .append(" 列").append(i / rowsUsed + 1).append(" 行").append(i % rowsUsed + 1)
+                    .append(" order=").append(e.getListOrder())
+                    .append("  ").append(name.isEmpty() ? "(空)" : name);
+            if (i >= model.slots.size()) {
+                sb.append("   ⚠️ 超出插件模型（多余条目）");
+            } else {
+                final LayoutModel.Slot slot = model.slots.get(i);
+                if (slot.player != null) {
+                    if (!slot.player.equals(e.getProfile().getId())) {
+                        sb.append("   ⚠️ 这格应该是 ").append(slot.name);
+                    }
+                } else if (!fakeUuid(i).equals(e.getProfile().getId())) {
+                    sb.append("   ⚠️ 这格应该是插件建的假条目");
+                }
+            }
+            out.add(sb.toString());
+        }
+        for (final TabListEntry e : unlisted) {
+            out.add("  (listed=false) " + e.getProfile().getName()
+                    + (inModel(model, e.getProfile().getId()) ? "" : "   ⚠️ 多余"));
+        }
+        return out;
+    }
+
+    /** 本轮槽位表里有没有这个 UUID（含隐藏的）—— verify 用。 */
+    private static boolean inModel(final LayoutModel model, final UUID id) {
+        for (final LayoutModel.Slot s : model.slots) {
+            if (id.equals(s.player)) {
+                return true;
+            }
+        }
+        return model.hidden.contains(id);
     }
 
     /**

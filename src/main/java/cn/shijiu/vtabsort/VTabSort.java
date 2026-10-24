@@ -12,6 +12,7 @@ import com.velocitypowered.api.event.player.ServerConnectedEvent;
 import com.velocitypowered.api.event.proxy.ProxyInitializeEvent;
 import com.velocitypowered.api.plugin.Plugin;
 import com.velocitypowered.api.plugin.annotation.DataDirectory;
+import com.velocitypowered.api.proxy.Player;
 import com.velocitypowered.api.proxy.ProxyServer;
 import com.velocitypowered.api.scheduler.ScheduledTask;
 import net.kyori.adventure.text.Component;
@@ -100,7 +101,7 @@ public final class VTabSort {
         this.dataDirectory = dataDirectory;
         this.sorter = new Sorter(proxy);
         this.skins = new SkinCache(logger, dataDirectory); // 读磁盘缓存，起服就有皮肤
-        this.layoutManager = new LayoutManager(proxy, sorter, skins);
+        this.layoutManager = new LayoutManager(proxy, sorter, skins, logger);
         this.flatManager = new FlatManager(proxy, sorter, layoutManager);
         this.headerFooter = new HeaderFooter(proxy);
         this.config = Configuration.defaults();
@@ -290,6 +291,13 @@ public final class VTabSort {
                     }
                     switchMode(source, args.length >= 2 ? args[1] : "");
                 }
+                case "verify", "check" -> {
+                    if (!source.hasPermission("vtabsort.reload")) {
+                        send(source, config.message("no-permission"));
+                        return;
+                    }
+                    verifyTab(source, args.length >= 2 ? args[1] : "");
+                }
                 case "demo" -> {
                     if (!source.hasPermission("vtabsort.reload")) {
                         send(source, config.message("no-permission"));
@@ -306,7 +314,7 @@ public final class VTabSort {
         @Override
         public List<String> suggest(final Invocation invocation) {
             if (invocation.arguments().length <= 1) {
-                return List.of("reload", "mode", "layout", "demo", "version");
+                return List.of("reload", "mode", "layout", "verify", "demo", "version");
             }
             if (invocation.arguments().length == 2
                     && "mode".equalsIgnoreCase(invocation.arguments()[0])) {
@@ -451,6 +459,43 @@ public final class VTabSort {
                 sb.append(") ");
             }
             send(source, sb.toString().trim());
+        }
+    }
+
+    /**
+     * {@code /vts verify [玩家名]}：打印这个玩家客户端里**实际**的 Tab 列表。
+     *
+     * <p>26.2 客户端的网格形状完全由「它自己列表里 listed 条目数」推出来
+     * （{@code PlayerTabOverlay#extractRenderState}：{@code rows = slots = size}，
+     * 再 while 推 cols，列主序）。所以位置不对时先看这里：客户端条目数和插件
+     * 模型格数不一样，就是多了/少了条目 —— 多一条整张网格就重排一格。
+     * 同时打到控制台，方便整段贴出来排查。
+     */
+    private void verifyTab(final CommandSource source, final String name) {
+        final Configuration cfg = config;
+        final Player target;
+        if (name == null || name.isEmpty()) {
+            if (!(source instanceof Player self)) {
+                send(source, "控制台要带玩家名：/vts verify <玩家名>");
+                return;
+            }
+            target = self;
+        } else {
+            target = proxy.getPlayer(name).orElse(null);
+            if (target == null) {
+                send(source, "找不到在线玩家：" + name);
+                return;
+            }
+        }
+        if (effectiveMode(cfg, online()) != Configuration.Mode.LAYOUT) {
+            send(source, "注意：当前落地模式不是 layout（flat 没有网格），verify 只对 layout 有意义。");
+        }
+        final List<String> lines = layoutManager.verify(target,
+                layoutManager.build(cfg, demo.snapshot()));
+        send(source, "== " + target.getUsername() + " 的 Tab 实况 ==");
+        for (final String line : lines) {
+            send(source, line);
+            logger.info("[vtabsort][verify] " + line);
         }
     }
 
