@@ -30,8 +30,6 @@ final class FlatManager {
     /** 补条目复用 layout 那套（真 UUID + 真皮肤），别再写第二份。 */
     private final LayoutManager standIns;
     private final org.slf4j.Logger logger;
-    /** 已经提示过「显示名被外部覆盖」的玩家（每个只提示一次）。 */
-    private final Set<UUID> overwriteWarned = ConcurrentHashMap.newKeySet();
 
     FlatManager(final ProxyServer proxy, final Sorter sorter, final LayoutManager standIns,
                 final org.slf4j.Logger logger) {
@@ -76,18 +74,10 @@ final class FlatManager {
                         || Objects.equals(entry.getDisplayNameComponent().orElse(null), want)) {
                     continue;
                 }
-                if (setDisplay(entry, want) && overwriteWarned.add(p.getUniqueId())) {
-                    logger.info("[vtabsort] " + p.getUsername()
-                            + " 的 Tab 显示名被别的东西改过（前缀丢了），已写回。"
-                            + " 反复出现 = 还有别的插件在写 tab 显示名（TAB / PlayerTitle / CMI）。");
-                }
+                // 静默写回（同 layout 的守卫）：不刷日志
+                setDisplay(entry, want);
             }
         }
-    }
-
-    /** 重新加载配置时清一下提示记录。 */
-    void resetOverwriteLog() {
-        overwriteWarned.clear();
     }
 
     void applyAll(final Configuration cfg) {

@@ -98,8 +98,6 @@ final class LayoutManager {
      * <p>所以这里缓存最后一个有效值：拿不到就用它顶，一个都没有才用 0。
      */
     private final Map<UUID, Integer> lastPing = new ConcurrentHashMap<>();
-    /** 已经提示过「显示名被外部覆盖」的玩家（每个只提示一次，避免刷屏）。 */
-    private final Set<UUID> overwriteWarned = ConcurrentHashMap.newKeySet();
 
     LayoutManager(final ProxyServer proxy, final Sorter sorter, final SkinCache skins,
                   final org.slf4j.Logger logger) {
@@ -431,23 +429,11 @@ final class LayoutManager {
                         || Objects.equals(entry.getDisplayNameComponent().orElse(null), slot.display)) {
                     continue;
                 }
-                if (!setDisplay(entry, slot.display)) {
-                    if (overwriteWarned.add(slot.player)) {
-                        logger.warn("[vtabsort] 写 " + slot.name
-                                + " 的显示名失败（Tab 条目已经被收走了？），下一轮重试");
-                    }
-                } else if (overwriteWarned.add(slot.player)) {
-                    logger.info("[vtabsort] " + slot.name + " 的 Tab 显示名被别的东西改过（前缀丢了），已写回。"
-                            + " 反复出现 = 还有别的插件在写 tab 显示名（TAB / PlayerTitle / CMI），"
-                            + "两边会互相覆盖，需二选一。");
-                }
+                // 静默写回：这条会每 500ms 跟后端/别的插件"抢"显示名，属于正常
+                // 拉锯，不刷日志。要排查是谁在抢就临时把它调成 Info。
+                setDisplay(entry, slot.display);
             }
         }
-    }
-
-    /** 重新加载配置时清一下提示记录（改前缀后再有问题应该重新提示）。 */
-    void resetOverwriteLog() {
-        overwriteWarned.clear();
     }
 
     void applyAll(final LayoutModel model, final Configuration cfg) {

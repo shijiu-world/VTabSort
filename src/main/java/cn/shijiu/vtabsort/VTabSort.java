@@ -649,9 +649,6 @@ public final class VTabSort {
         modeOverride = null;
         // 配置换了，超限警告重新算一遍（改了 max-columns/rows 之后该提示就提示）
         overflowWarned = false;
-        // 「显示名被外部改过」的提示记录也清掉：改了前缀再出问题应该重新提示
-        layoutManager.resetOverwriteLog();
-        flatManager.resetOverwriteLog();
         lastModified = configMtime();
         // layout 玩家前缀改了（加了或删了）：先把显示名打回裸名，让下面重建时
         // 干净地写一遍 —— 显示名能改，但删前缀之后旧前缀会一直挂在条目上。
