@@ -1,6 +1,7 @@
 # VTabSort agent 备忘（v3 起）
 
 - 定位：Velocity 端 Tab 展示三模式插件。layout = Hypixel 式固定网格（列头子服名 + 假条目补满 + 人数降序分列 + 续列 + 自适应行数）；flat = 前缀列表 + 可选排序；auto = 在线 ≤ rows 走 flat、超过走 layout。底层仍是 1.21.2+ `listOrder` 协议字段，不碰 scoreboard team。
+- **默认配置就是服主线上那份**（2026-10-24，v3.3.11）：`src/main/resources/config.toml` = 测试服 `plugins/vtabsort/config.toml` 一字不差（header/footer 渐变、8 个子服显示名、每服**带 Mojang 签名的完整 base64** 列头皮肤、`header-ping = -1`）。新装或删掉配置后重建都用它。⚠️ `Configuration.defaults()` 只兜「文件缺失/某键没写」，数值和这份不必一致（max-columns 4 / header-format 也不同），**别拿 defaults() 当默认配置的真相**，改默认配置只改 resources 里那份。
 - 🔴 依赖必须 velocity-api **4.x**（`setListOrder` 3.4.0 才有；VWhisper/Vmessage 用的 3.2.0 没有）。编译 release **25**。假条目用 `TabListEntry.builder().tabList(...).profile(...).displayName(...).latency(...).gameMode(0).listed(true).listOrder(...)` + `TabList#addEntry/removeEntry/containsEntry/getEntry`。
 - 🔴 **listOrder 是降序**（官方 1.21.2 changelog："a non-negative ordering index that is sorted **highest to lowest**"——值越大越靠前，demo 实测 2026-10-21 镜像翻车定案）。建模槽位下标（0 = 期望显示在最前）≠ 协议顺序值：发包一律取 `总槽数-1-下标` 镜像（LayoutManager.build 第 5 步 / applyViewer / addFake）；flat 的 Sorter.computeOrders 同理——人多的服基数最大、组内 idx 越小值越大（`RANK_CAP-idx`）。没进 orders 表的条目默认 0 = 沉底。
 - 🔴 **客户端折行算法（1.19.3+ 实测 2026-10-18）**：列数 = ceil(总条目 ÷ 行数上限 20)，行数 = ceil(总条目 ÷ 列数)，是**平衡列**不是固定 20 填充（27 人 → 2 列×14 行）。推论：网格总条目必须精确 = 列数×行数；行数自适应取 max(内容高度, ceil((rows×(C-1)+1)/C))，上限 rows。4 列最少 16 行。
