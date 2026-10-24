@@ -9,11 +9,13 @@ import net.kyori.adventure.text.Component;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * flat 模式：普通列表 + 名字前缀子服名 + 可选按子服排序。
@@ -28,6 +30,8 @@ final class FlatManager {
     /** 补条目复用 layout 那套（真 UUID + 真皮肤），别再写第二份。 */
     private final LayoutManager standIns;
     private final org.slf4j.Logger logger;
+    /** 已经提示过「显示名被外部覆盖」的玩家（每个只提示一次）。 */
+    private final Set<UUID> overwriteWarned = ConcurrentHashMap.newKeySet();
 
     FlatManager(final ProxyServer proxy, final Sorter sorter, final LayoutManager standIns,
                 final org.slf4j.Logger logger) {
@@ -35,6 +39,55 @@ final class FlatManager {
         this.sorter = sorter;
         this.standIns = standIns;
         this.logger = logger;
+    }
+
+    /**
+     * 这个人在 flat 里该显示的组件。
+     *
+     * @return {@code null} = 本轮不显示他（hide-loading 开着且他还没进任何子服）
+     */
+    private Component nameFor(final Configuration cfg, final Player p) {
+        final String s = serverOf(p);
+        if (!s.isEmpty()) {
+            return prefixed(cfg, s, p.getUsername());
+        }
+        if (cfg.hideLoading()) {
+            return null;
+        }
+        return Colors.prefixed(cfg.flatPrefix().replace("#name#", cfg.loadingDisplayName()),
+                p.getUsername());
+    }
+
+    /**
+     * 显示名守卫（每 0.5 秒一次）—— 同 {@link LayoutManager#guardNames}，
+     * 只是 flat 的显示名是现算的。只写不一致的，不动顺序、不建条目。
+     */
+    void guardNames(final Configuration cfg) {
+        final List<Player> players = new ArrayList<>(proxy.getAllPlayers());
+        for (final Player viewer : players) {
+            final TabList tabList = viewer.getTabList();
+            for (final Player p : players) {
+                final Component want = nameFor(cfg, p);
+                if (want == null) {
+                    continue;
+                }
+                final TabListEntry entry = tabList.getEntry(p.getUniqueId()).orElse(null);
+                if (entry == null
+                        || Objects.equals(entry.getDisplayNameComponent().orElse(null), want)) {
+                    continue;
+                }
+                if (setDisplay(entry, want) && overwriteWarned.add(p.getUniqueId())) {
+                    logger.info("[vtabsort] " + p.getUsername()
+                            + " 的 Tab 显示名被别的东西改过（前缀丢了），已写回。"
+                            + " 反复出现 = 还有别的插件在写 tab 显示名（TAB / PlayerTitle / CMI）。");
+                }
+            }
+        }
+    }
+
+    /** 重新加载配置时清一下提示记录。 */
+    void resetOverwriteLog() {
+        overwriteWarned.clear();
     }
 
     void applyAll(final Configuration cfg) {
@@ -57,12 +110,9 @@ final class FlatManager {
                     //    listOrder 也没人设 → 排在所有人后面，看起来就是个幽灵
                     //    （2026-10-24 截图里的 Ku_Gu_Gu）。和 layout 单开一节的
                     //    做法对齐：让人一眼看出是「还没进服」，而不是"没前缀的神秘人"。
-                    //    前缀可以用 [flat].loading-prefix 单独配（空 = 跟 flat-prefix 一样）。
-                    final String fmt = cfg.flatLoadingPrefix().isEmpty()
-                            ? cfg.flatPrefix() : cfg.flatLoadingPrefix();
-                    names.put(p.getUniqueId(), Colors.prefixed(
-                            fmt.replace("#name#", cfg.loadingDisplayName()),
-                            p.getUsername()));
+                    //    前缀就是普通的那份（[flat].prefix-format），只是 #name# 换成
+                    //    [servers.names].loading，不再另开一个键。
+                    names.put(p.getUniqueId(), nameFor(cfg, p));
                 }
                 continue;
             }
@@ -190,10 +240,13 @@ final class FlatManager {
         }
     }
 
-    private static void setDisplay(final TabListEntry entry, final Component value) {
+    /** 写显示名；@return 成功了没（条目被收走时 setDisplayName 会抛）。 */
+    private static boolean setDisplay(final TabListEntry entry, final Component value) {
         try {
             entry.setDisplayName(value);
-        } catch (final Exception ignored) {
+            return true;
+        } catch (final Exception e) {
+            return false;
         }
     }
 }

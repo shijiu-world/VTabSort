@@ -62,6 +62,8 @@ public final class VTabSort {
 
     private final ProxyServer proxy;
     private final Logger logger;
+    /** 上一轮 layout 实际用的模型（显示名守卫要按它比对，不重算）。 */
+    private volatile LayoutModel lastModel;
     private final Path dataDirectory;
     private final Sorter sorter;
     private final SkinCache skins;
@@ -123,6 +125,7 @@ public final class VTabSort {
         registerCommands();
         startAutoReload();
         startReassert();
+        startNameGuard();
         logger.info("[vtabsort] VTabSort 已就绪 —— " + describeMode(config));
     }
 
@@ -184,8 +187,10 @@ public final class VTabSort {
         warnOverflowOnce(cfg, decision);
         if (effective == Configuration.Mode.LAYOUT) {
             layoutManager.applyAll(decision.model, cfg);
+            lastModel = decision.model;
         } else {
             flatManager.applyAll(cfg);
+            lastModel = null;
         }
         // header/footer 与展示模式无关：每轮都刷（%ping%/%online%/%server% 会变），
         // 内部全 diff —— 渲染结果没变就不发包。
@@ -644,6 +649,9 @@ public final class VTabSort {
         modeOverride = null;
         // 配置换了，超限警告重新算一遍（改了 max-columns/rows 之后该提示就提示）
         overflowWarned = false;
+        // 「显示名被外部改过」的提示记录也清掉：改了前缀再出问题应该重新提示
+        layoutManager.resetOverwriteLog();
+        flatManager.resetOverwriteLog();
         lastModified = configMtime();
         // layout 玩家前缀改了（加了或删了）：先把显示名打回裸名，让下面重建时
         // 干净地写一遍 —— 显示名能改，但删前缀之后旧前缀会一直挂在条目上。
@@ -702,6 +710,38 @@ public final class VTabSort {
         }).delay(3, TimeUnit.SECONDS)
                 .repeat(Math.max(1L, config.autoReloadIntervalSeconds()), TimeUnit.SECONDS)
                 .schedule();
+    }
+
+    /**
+     * 显示名守卫：每 0.5 秒把「被别人改掉的显示名」写回来。
+     *
+     * <p>🔴 为什么单独起一个高频任务：显示名是单写者字段，后端（Paper 自己的
+     * tab 名同步）/ PlayerTitle / CMI 都会在推玩家信息时重新发一遍自己的显示名，
+     * 把我们的前缀顶掉。周期性校准（reassert，默认 3 秒）空窗期太长 —— 服主
+     * 截图里一列 16 个人有 2 个名字前少了那个空格，就是被逮在空窗期里。
+     * 这里只比对显示名（不建条目、不发顺序包），成本极低。
+     */
+    private void startNameGuard() {
+        proxy.getScheduler().buildTask(this, this::nameGuard)
+                .delay(500, TimeUnit.MILLISECONDS)
+                .repeat(500, TimeUnit.MILLISECONDS)
+                .schedule();
+    }
+
+    private void nameGuard() {
+        final Configuration.Mode mode = appliedMode.get();
+        if (mode == null) {
+            return;
+        }
+        final Configuration cfg = config;
+        if (mode == Configuration.Mode.LAYOUT) {
+            final LayoutModel model = lastModel;
+            if (model != null) {
+                layoutManager.guardNames(model, cfg);
+            }
+        } else {
+            flatManager.guardNames(cfg);
+        }
     }
 
     /**

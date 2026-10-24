@@ -98,6 +98,8 @@ final class LayoutManager {
      * <p>所以这里缓存最后一个有效值：拿不到就用它顶，一个都没有才用 0。
      */
     private final Map<UUID, Integer> lastPing = new ConcurrentHashMap<>();
+    /** 已经提示过「显示名被外部覆盖」的玩家（每个只提示一次，避免刷屏）。 */
+    private final Set<UUID> overwriteWarned = ConcurrentHashMap.newKeySet();
 
     LayoutManager(final ProxyServer proxy, final Sorter sorter, final SkinCache skins,
                   final org.slf4j.Logger logger) {
@@ -351,11 +353,9 @@ final class LayoutManager {
             final Sec sec = part.sec();
             // 列头：#count# 恒为该子服总人数（续列的列头也一样，"列名不变"）。
             // 🔴 server 字段带上：列头要用**这个服的列头头像**皮肤（可单独配）。
-            // 「加载中」那一列可以单独配列头（[layout].loading-header-format，
-            // 空 = 跟 header-format 一样，只是 #name# = 加载中的显示名）。
-            final String fmt = sec.server.isEmpty() && !cfg.loadingHeaderFormat().isEmpty()
-                    ? cfg.loadingHeaderFormat() : cfg.headerFormat();
-            slots.add(new LayoutModel.Slot(null, textComponent(fmt
+            // 列头统一用 header-format；「加载中」那一节只是 #name# 换成
+            // [servers.names].loading 的显示名，写法不单独配（多余的开关）。
+            slots.add(new LayoutModel.Slot(null, textComponent(cfg.headerFormat()
                     .replace("#name#", sec.display)
                     .replace("#count#", String.valueOf(sec.count()))), null, sec.server));
             placed++;
@@ -406,6 +406,49 @@ final class LayoutManager {
     // ------------------------------------------------------------------
     // 应用到 viewer（全 diff：没变化不发一个包）
     // ------------------------------------------------------------------
+
+    /**
+     * 显示名守卫（每 0.5 秒一次，只写不一致的，不动顺序、不建条目）。
+     *
+     * <p>🔴 为什么需要（2026-10-24 服主截图：一列里有两三个人名字前少一个空格）：
+     * 显示名是<b>单写者字段</b>，而"别人"不只是 TAB —— 后端（Paper 自己的 tab 名
+     * 同步）、PlayerTitle、CMI 这类插件在推玩家信息时都会把自己的显示名重新发
+     * 一遍，我们的前缀就被顶掉了。周期性校准（reassert）默认 3 秒一轮，空窗期
+     * 足够被截图逮到几个漏网的。
+     *
+     * <p>这里做最便宜的检查：槽位里有真人、本轮该有显示名 → 和条目现值比，
+     * 不一样就写回去。几十个人也就几千次对象比较，比整轮重建便宜得多。
+     */
+    void guardNames(final LayoutModel model, final Configuration cfg) {
+        for (final Player viewer : proxy.getAllPlayers()) {
+            final TabList tabList = viewer.getTabList();
+            for (final LayoutModel.Slot slot : model.slots) {
+                if (slot.player == null || slot.display == null) {
+                    continue;
+                }
+                final TabListEntry entry = tabList.getEntry(slot.player).orElse(null);
+                if (entry == null
+                        || Objects.equals(entry.getDisplayNameComponent().orElse(null), slot.display)) {
+                    continue;
+                }
+                if (!setDisplay(entry, slot.display)) {
+                    if (overwriteWarned.add(slot.player)) {
+                        logger.warn("[vtabsort] 写 " + slot.name
+                                + " 的显示名失败（Tab 条目已经被收走了？），下一轮重试");
+                    }
+                } else if (overwriteWarned.add(slot.player)) {
+                    logger.info("[vtabsort] " + slot.name + " 的 Tab 显示名被别的东西改过（前缀丢了），已写回。"
+                            + " 反复出现 = 还有别的插件在写 tab 显示名（TAB / PlayerTitle / CMI），"
+                            + "两边会互相覆盖，需二选一。");
+                }
+            }
+        }
+    }
+
+    /** 重新加载配置时清一下提示记录（改前缀后再有问题应该重新提示）。 */
+    void resetOverwriteLog() {
+        overwriteWarned.clear();
+    }
 
     void applyAll(final LayoutModel model, final Configuration cfg) {
         // 🔴 网格「形状」变了就整体重建。逐格 diff 在换形状时容易漏下没人认领的
@@ -942,10 +985,18 @@ final class LayoutManager {
         }
     }
 
-    private static void setDisplay(final TabListEntry entry, final Component value) {
+    /**
+     * 写显示名。
+     *
+     * @return 写成功了没 —— 条目已经被后端/代理收走时 setDisplayName 会抛，
+     *         这时别当成"已修好"，下一轮守卫还会再取一遍
+     */
+    private static boolean setDisplay(final TabListEntry entry, final Component value) {
         try {
             entry.setDisplayName(value);
-        } catch (final Exception ignored) {
+            return true;
+        } catch (final Exception e) {
+            return false;
         }
     }
 
