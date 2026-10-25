@@ -603,13 +603,14 @@ final class LayoutManager {
             }
         }
         if (removed > 0) {
-            // 限流：某个插件持续往后端发条目时，audit 会每轮都清、每轮都想 WARN
+            // 限流：某个插件持续往后端发条目时，audit 会每轮都清、每轮都想打日志
             // （reassert 默认 3 秒一轮）→ 一分钟内同一个 viewer 只说一次。
+            // 级别用 debug：清残留是兜底动作，正常断开也会零星触发，不该进 console。
             final long now = System.currentTimeMillis();
             final Long last = auditWarnedAt.get(viewer.getUniqueId());
             if (last == null || now - last >= AUDIT_WARN_INTERVAL_MS) {
                 auditWarnedAt.put(viewer.getUniqueId(), now);
-                logger.warn("[vtabsort] " + viewer.getUsername() + " 的 Tab 里有 " + removed
+                logger.debug("[vtabsort] " + viewer.getUsername() + " 的 Tab 里有 " + removed
                         + " 条多余条目（历史残留），已清掉；本轮网格 " + model.slots.size() + " 格");
             }
         }

@@ -17,9 +17,28 @@
 - 🔴 **TomlLite 的注释坑（v3.3.1 修）**：`stripComment` 原本只在「# 前面有空白」时才当注释，**行首的 `#`（i==0）不算** —— 整行注释里带 `=` 的（`# lobby = "player:Notch"`）会被解析成键。以前只有固定键被读，垃圾键无害；v3.3.0 起按前缀动态扫 `[servers.skins.*]` 就炸了（凭空多出叫 `# lobby` 的子服）。现在 i==0 也算整行注释（`abc#def` 仍是内容）。**动态扫前缀的配置段都要留意这类脏键**。
 - **自定义图片做皮肤（不需要真实玩家 ID）**：图片必须落在 Mojang 的皮肤 CDN（textures.minecraft.net）上，客户端只认那个域名的纹理。免费路径是 MineSkin：`curl -X POST "https://api.mineskin.org/generate/upload?name=X&model=classic&visibility=1" -F "file=@skin.png"` → 返回 `{hash, data.texture.{value,signature,url}}`。🔴 **推荐填 `data.texture.value` + `data.texture.signature` 两串**（配置里写成 `xxx` 和 `xxx-signature`），只填 hash 也能解析（v3.3.2 修了 63 位哈希），但**无签名能否显示取决于客户端版本、不保证**。⚠️ v2 那个 `/v2/generate/upload` 是 404，用不带版本号的路径。图必须是 64×64 或 64×32 PNG；头部区域 8,8~16,16，帽子层 40,8~48,16（`show-hat=true` 会渲染帽子层）。已上传过的两张：`6a88f9a8…`（占位/填充）、`8597843a…`（方块头），原始 PNG 与 resp JSON 在 `D:\game\Server\.workbuddy\tmp_skin\`。
 - **"上传到 textures.minecraft.net"到底怎么回事**：`textures.minecraft.net` 是**只读 CDN，没有任何上传接口**，只有 `GET /texture/<hash>`。真正有写权限的是**官方接口** `POST https://api.minecraftservices.com/minecraft/profile/skins`（multipart：`variant=classic|slim` + `file`；也可 JSON `{"variant":..,"url":..}` 让 Mojang 自己去拉图），头里带 `Authorization: Bearer <MC access token>`。这是 Mojang/微软**官方** REST API，但定位是"玩家改自己账号的皮肤"，不是给第三方批量用的：① token 必须来自**已购买 Java 版**的账号（没买游戏 → 401/403）；② 上传 = 真的把那个账号的皮肤改掉，且 Mojang 限流约 30s~1min 一换。MineSkin 没有特权，它只是养了一批社区捐赠的已购账号池，用它们的 token 代调这个官方接口、把返回的 value+signature 吐给你（免费 20 张/分钟）。存储是**按内容寻址**（hash = 图片 SHA-256），同图重传得同 hash，账号之后换皮旧 URL 仍长期有效 → 所以 hash 可以当永久静态资源用。**注意签名**：照搬官方/MineSkin 返回的完整 base64 时必须连着 `signature` 一起填（配置里写 `<名称>-signature`）；自己拼 value（不写 `signatureRequired`）能不能显示取决于客户端版本，**不能保证**，所以配置落地时优先贴带签名的两串。
-- ⚠️ **"无签名纹理被客户端丢弃"只是怀疑，没有证据**（2026-10-23 复盘）：当时线上"颜色头像全是默认皮肤"的**真实原因是 VTabSort 根本没在运行**（00:20 被 PlugMan unload，之后热装回 TAB）且配置 `mode = "flat"`（flat 没有列头/假条目）。当时怀疑是裸 hash 无签名 → 但插件都没加载，这条推断无成立基础，**别再当成事实引用**。稳妥做法仍建议贴 MineSkin 的 `data.texture.value` + `<名称>-signature`（Mojang 真签名，一定能显示）。v3.3.4 起 reload 会打 `皮肤已就绪（N 份带 Mojang 签名）: @default=签名✓ server:lobby=签名✓ …`，认不出的写法直接 WARN —— 排查皮肤先看这行，再去看插件到底有没有加载（`/vts version` + 启动日志 `VTabSort 已就绪`）。
+- 🔴🔴 **「无签名纹理被客户端丢弃」已实锤（2026-10-24，反编译 26.2 客户端）**：`PlayerInfo.createSkinLookup` 里
+  `requireSecure = !minecraft.isLocalPlayer(profile.id())`，然后 `SkinManager.createLookup(profile, requireSecure)` 里
+  `currentValue.filter(skin -> !requireSecure || skin.secure())` —— `PlayerSkin.secure()` = `signatureState == SIGNED`。
+  **Tab 列表里除"本地玩家自己"以外所有人（含我们补的列头假条目 / 补位真人）都走 requireSecure=true**，
+  所以没有 Mojang 官方签名的 property 一定被 filter 掉 → 显示默认 Steve。自己拼 value、自建 URL 一律没用。
+  另外 `SkinTextureDownloader.downloadSkin` 是裸的 `URI.create(url).toURL().openConnection(proxy)`，
+  **客户端并不校验域名**（jar 里连 "textures.minecraft.net" 这个字符串都没有）—— 但签名那关过不去，所以还是只能走
+  Mojang CDN。反编译法子：`~/AppData/Roaming/.minecraft/versions/26.2/26.2.json` 里 `downloads.client.url` 下 client.jar，
+  CFR 单 class 反编译 `SkinManager` / `SkinTextureDownloader`，`javap -c PlayerInfo` 看调用点传的 boolean。
+- ⚠️ 2026-10-23 曾把线上"颜色头像全是默认皮肤"归因为裸 hash 无签名 → 当时真实原因是 VTabSort 没运行 + `mode=flat`，
+  那条归因当时**没有证据**（结论本身现在有了，但别把当时那次的现象当证据引用）。稳妥做法仍建议贴 MineSkin 的 `data.texture.value` + `<名称>-signature`（Mojang 真签名，一定能显示）。v3.3.4 起 reload 会打 `皮肤已就绪（N 份带 Mojang 签名）: @default=签名✓ server:lobby=签名✓ …`，认不出的写法直接 WARN —— 排查皮肤先看这行，再去看插件到底有没有加载（`/vts version` + 启动日志 `VTabSort 已就绪`）。
 - 🔴 **纹理哈希长度不一定是 64 位**（v3.3.2 修）：MineSkin/Mojang 返回的 hash 实测出现过 **63 位**（`632e7a90…d016e` 这种），**补 0 成 64 位反而 404** —— 说明 63 才是真长度。v3.3.2 之前 `SkinCache.HASH` 写死 `[0-9a-fA-F]{64}`，这类哈希会被判成"不是哈希"→ 再当 base64 解不开 → **静默退回 Steve**（不报错，最难查；冒烟时要真去 `textures.minecraft.net` 拉一下）。现已放宽成 `{32,80}`：真人皮肤 64 位、base64 value 几百位，不会误撞。
-- **当前配色（2026-10-22 服主定）**：占位假人 `default-skin` = 纯色 `#8f8f8f`；列头 = **各服在 `[servers.names]` 里的名字颜色**（`#fa86a9` 传送大厅/电玩中心、`#e1f9e8` 生存净土、`#9adbc5` 生存乐土、`#f7cf83` 工业基地、`#fdb78e` 星露谷/活动区域/限时游戏）。同颜色的服共用同一个哈希（按内容寻址）。生成脚本 `D:\game\Server\.workbuddy\tmp_skin\make_colors.py`，原图与上传返回在 `tmp_skin\colors\`。换配色 = 重新生成对应颜色的 64×64 纯色 PNG → 上传 MineSkin → 把返回的 `data.texture.value` + `data.texture.signature` 换进 `[servers.skins]` 的 `<服名>` 和 `<服名>-signature`（别只换 hash）。
+- **列头头像 = 立体按钮贴图（2026-10-24 服主定，取代早先的纯色）**：脸部 8x8 画经典 GUI 按钮斜面 ——
+  `hi` 走顶行 + 左列（1px），`lo` 走底行 + 右列（1px），右上/左下两角是 `mid`，中间 6x6 是 `base`；
+  **内芯比边框暗 = 内凹**（和 16x16 参考图缩一半的几何逐像素对上）。帽子层 (40,8) 必须全透明，否则盖住脸。
+  配色 = `[servers.names]` 里各服名字的色相，但**明度压进 0.44~0.68**才有提亮余量（`#e1f9e8` 这种接近白的原样
+  做按钮，边框没得亮、暗边发脏）；纯灰（`#8f8f8f`）s≈0，**别给它设饱和度下限**，否则偏红。
+  同色的服共用一份 value：lobby=minigame（#fa86a9）、starvalley=bedwars=killer（#fdb78e）。
+  脚本：`D:\game\Server\.workbuddy\tmp_skin\gen_skin.py`（生成 64x64 PNG，手写 PNG 编码，不依赖 PIL）、
+  `upload_all.py`（MineSkin 上传，**v1 端点返回没有 `success` 字段**，成功与否看 `data.texture.value`）、
+  `apply_config.py`（替换 `[servers.skins]` 整段，只碰这一段）。上传结果 `up_<色号>.json`。
+- 占位假人 `default-skin` 仍是纯色 `#8f8f8f`（服主没要求换，和列头按钮不是一套风格）。
 - 🔴 **显示名会被别人顶掉 → 0.5 秒守卫**（v3.3.12，2026-10-24 服主截图：同一列 16 人里 2 个名字前少了那个空格）：显示名是**单写者字段**，抢它的不只是 TAB —— 后端（Paper 自己的 tab 名同步）、PlayerTitle、CMI 在推玩家信息时都会把自己的显示名重发一遍，我们的 `[layout].prefix-format` 就被覆盖。reassert（默认 3 秒一轮）空窗期足够被截图逮到。现在 `VTabSort.startNameGuard()` 每 500ms 只比对显示名（`LayoutManager#guardNames` / `FlatManager#guardNames`，不建条目、不发顺序包），不一致就写回。🔴 **静默写回、不刷日志**（服主 2026-10-24 明确不要那条 INFO，v3.3.13 已删）—— 它其实证明了一件事：后端/别的插件确实会重发显示名，每次都是靠这个守卫拉回来的，属正常拉锯。`setDisplay` 改成返回 boolean —— 条目被收走时 `setDisplayName` 会抛，不能当"已修好"。
 - 🔴 **flat 前缀的尾随空格也是有意**的（v3.3.13）：`[flat].prefix-format = "&8[#name#&8] "`，少了它名字直接贴着 `]`。TOML 解析**不会**吃掉引号里的空格（`TomlLite.parseValue` 只 trim 行尾），所以遇到"空格不生效"先查两件事：①配置里到底有没有那个空格；②用的哪个键 —— `[layout].prefix-format` 只管网格，flat 只认 `[flat].prefix-format`。
 - 前缀是**一个空格**是有意的（服主 2026-10-24 定）：`[layout].prefix-format = " "` + `header-format = " &7[#name#…"` → 玩家名和列头文字**左对齐**（都靠一个前导空格顶出去）。别"顺手清理"成空串。

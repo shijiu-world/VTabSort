@@ -182,8 +182,9 @@ final class FlatManager {
             ghosts += purgeGhosts(viewer, online);
         }
         if (ghosts > 0) {
-            logger.info("[vtabsort] flat 清了 " + ghosts + " 条幽灵条目（这些 UUID 已经不在线了，"
-                    + "正常断开本该由后端/代理收走）");
+            // 半开连接 / 后端异常断开时会零星出现一条，属正常现象 —— 只留 debug，
+            // 别在 console 里刷（这活儿本身是必须干的，见 purgeGhosts 的注释）
+            logger.debug("[vtabsort] flat 清了 " + ghosts + " 条幽灵条目");
         }
     }
 
